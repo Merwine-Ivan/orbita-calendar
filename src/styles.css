@@ -67,3 +67,96 @@
  .login-screen{min-height:100dvh}.login-art{min-height:220px}.login-art h1{font-size:28px}.login-form{padding:22px 10px}.login-form input{font-size:16px}
 }
 @media(max-width:370px){main{padding-left:10px;padding-right:10px}.mobile-week-picker>button{min-width:24px}.mobile-week-days small{font-size:8px}.mobile-week-days button{padding-left:0;padding-right:0}.mobile-bottom-nav button span{font-size:9px}}
+
+/* Compact calendar agenda cards, fluid from narrow phones to widescreen desktop.
+   A single button covers the whole row: no tiny nested edit controls. */
+.lesson-card {
+  display:grid;
+  grid-template-columns:50px minmax(0,1fr) 16px;
+  align-items:center;
+  column-gap:10px;
+  min-height:74px;
+  padding:10px 12px;
+  border-radius:11px;
+  text-align:left;
+  overflow:hidden;
+  flex-shrink:0;
+  --card-subject-color:#b9b5fa;
+}
+.lesson-card.amber{--card-subject-color:#e8c57d}
+.lesson-card.mint{--card-subject-color:#9cdec9}
+.lesson-card .lesson-card-when {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  justify-content:center;
+  gap:3px;
+  min-width:0;
+  padding-right:8px;
+  margin:0;
+  border-right:1px solid #374451;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
+}
+.lesson-card-when strong{font-size:12px;line-height:1.1;color:#e8eef4}
+.lesson-card-when small{font-size:11px;color:#9baabb;line-height:1.1}
+.lesson-card-content{display:flex;flex-direction:column;min-width:0;gap:4px}
+.lesson-card-topline{display:flex;align-items:center;gap:7px;min-width:0}
+.lesson-card-subject{min-width:0;flex:1 1 auto;max-width:100%;font-size:10px;font-weight:500;line-height:1.25;color:var(--card-subject-color);overflow-wrap:anywhere}
+.lesson-card .lesson-card-status{flex:0 0 auto;margin:0;font-size:9px;line-height:1.2;padding:3px 5px;white-space:nowrap}
+.lesson-status-compact{display:none}
+.lesson-card-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-clamp:2;overflow:hidden;overflow-wrap:anywhere;font-size:13px;font-weight:600;line-height:1.28;color:#e6edf3}
+.lesson-card-bottom{display:flex;flex-wrap:wrap;align-items:center;min-width:0;column-gap:9px;row-gap:2px;color:#9aa8b8;font-size:10px;line-height:1.2}
+.lesson-card-teacher{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lesson-card-students{white-space:nowrap;color:#8ea0ae}
+.lesson-card>.nav-svg{color:#829ca9;justify-self:end;align-self:center;opacity:.9}
+.lesson-card:focus-visible{outline:2px solid #a2e8ca;outline-offset:2px}
+.lesson-card:hover .nav-svg{color:#b3e5d3}
+/* 241-310px agenda sidebar on laptops: preserve a compact status badge. */
+@media(min-width:951px) and (max-width:1200px){
+  .lesson-card{grid-template-columns:43px minmax(0,1fr) 12px;gap:6px;padding:9px 8px}
+  .lesson-card-when strong{font-size:11px}
+  .lesson-card-when small{font-size:10px}
+  .lesson-card-status .lesson-status-full{display:none}
+  .lesson-card-status .lesson-status-compact{display:inline}
+  .lesson-card-name{font-size:12px}
+  .lesson-card-bottom{font-size:9px}
+}
+/* Mid-size tablets: two compact columns, without nested scrollbars. */
+@media(min-width:741px) and (max-width:950px){
+  .calendar-layout .agenda-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:none;overflow:visible;align-items:stretch}
+  .lesson-card{grid-template-columns:49px minmax(0,1fr) 14px;gap:8px;padding:10px}
+  .lesson-card-name{font-size:12px}
+}
+/* Mobile: dense rows and a naturally scrolling day list. */
+@media(max-width:740px){
+  .calendar-layout .agenda-list{display:flex;flex-direction:column;gap:7px;padding:9px 10px;max-height:none;overflow:visible}
+  .lesson-card{grid-template-columns:48px minmax(0,1fr) 14px;gap:9px;padding:9px 11px;min-height:68px;border-radius:10px}
+  .lesson-card-name{font-size:12px}
+  .lesson-card-bottom{font-size:10px}
+  .lesson-card .lesson-card-when{padding-right:7px}
+  .lesson-card .nav-svg{width:14px;height:14px}
+  .page-header .header-actions button.primary{flex:0 1 auto;min-height:40px;width:auto;padding:9px 12px;font-size:11px}
+}
+/* Smallest phones: shorten only the status, not the lesson title. */
+@media(max-width:360px){
+  .calendar-layout .agenda-list{padding:7px;gap:6px}
+  .lesson-card{grid-template-columns:43px minmax(0,1fr) 12px;gap:7px;min-height:64px;padding:8px}
+  .lesson-card-when strong{font-size:11px}
+  .lesson-card-when small{font-size:10px}
+  .lesson-card-name{font-size:12px}
+  .lesson-card-subject{font-size:9px}
+  .lesson-card .lesson-card-status{font-size:8px}
+  .lesson-card-status .lesson-status-full{display:none}
+  .lesson-card-status .lesson-status-compact{display:inline}
+  .lesson-card-bottom{font-size:9px;column-gap:6px}
+}
+/* Larger phones and small tablets have room for clearer hierarchy. */
+@media(min-width:431px) and (max-width:740px){
+  .lesson-card{grid-template-columns:56px minmax(0,1fr) 16px;gap:12px;min-height:72px;padding:11px 13px}
+  .lesson-card-when strong{font-size:13px}
+  .lesson-card-name{font-size:14px}
+  .lesson-card-bottom{font-size:11px}
+  .lesson-card-subject{font-size:11px}
+  .lesson-card .lesson-card-status{font-size:10px}
+}
