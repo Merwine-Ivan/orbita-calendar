@@ -91,9 +91,10 @@ function createMaintenance({ url, serviceKey, fetchImpl = fetch, all, backend, n
     return result;
   };
   function scopeCheck(scope, filter) {
-    if (!["trash", "archive", "group", "period", "schedule", "reset", "imports"].includes(scope)) bad("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u043E\u0447\u0438\u0441\u0442\u043A\u0438");
+    if (!["trash", "lesson", "archive", "group", "period", "schedule", "reset", "imports"].includes(scope)) bad("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u043E\u0447\u0438\u0441\u0442\u043A\u0438");
     if (!filter || typeof filter !== "object" || Array.isArray(filter)) bad("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0444\u0438\u043B\u044C\u0442\u0440\u044B");
     if (scope === "group" && !/^[0-9a-f-]{36}$/i.test(filter.groupId || "")) bad("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0430\u0440\u0445\u0438\u0432\u043D\u0443\u044E \u0433\u0440\u0443\u043F\u043F\u0443");
+    if (scope === "lesson" && !/^[0-9a-f-]{36}$/i.test(filter.lessonId || "")) bad("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435 \u0438\u0437 \u043A\u043E\u0440\u0437\u0438\u043D\u044B");
     return { scope, filter };
   }
   async function reauthenticate(owner, ownerPassword) {
