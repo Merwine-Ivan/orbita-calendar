@@ -30,3 +30,10 @@ test('biweekly repeats consistently across month boundaries',()=>{
  const g={id:'period',schedule:[{day:2,start:'10:00',end:'11:00',repeat:'biweekly',effectiveFrom:'2026-10-27'}]};
  assert.deepEqual(recurrence([g],2026,10,[]).map(x=>x.date),['2026-11-10','2026-11-24']);
 });
+
+test('permanently removed lesson does not return after schedule regeneration',()=>{
+ const group={id:'g',schedule:[{day:2,start:'09:00',end:'10:00'}],suppressedOccurrences:[{date:'2026-10-20',start:'09:00'}]};
+ const lessons=recurrence([group],2026,9,[]);
+ assert.ok(!lessons.some(l=>l.date==='2026-10-20'));
+ assert.equal(lessons.length,3);
+});

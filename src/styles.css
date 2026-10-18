@@ -23,6 +23,15 @@
 .sidebar nav button .nav-label{font-size:12px;white-space:nowrap}
 .sidebar nav button small{margin-left:auto}
 .mobile-top-brand,.mobile-bottom-nav,.mobile-more-backdrop,.mobile-date-nav,.mobile-day-count{display:none}
+.owner-db{overflow:hidden}.owner-db-header{padding:24px 26px;border-bottom:1px solid #2c3946}
+.owner-db-header h2{font-size:22px;margin:10px 0}.owner-db-tabs{display:flex;gap:10px;padding:14px 24px;border-bottom:1px solid #2c3946;overflow-x:auto}
+.owner-db-tabs button{white-space:nowrap;min-height:44px}.owner-db-body{padding:24px;max-width:740px}
+.owner-db-body h3{font-size:16px;margin:22px 0 10px}.owner-db-body label{display:flex;flex-direction:column;gap:8px;font-size:12px;margin:16px 0;color:#b9c6d4}
+.owner-db-body button{min-height:44px}.owner-db-body input,.owner-db-body select{width:100%;max-width:100%}.owner-db-confirm{border:1px solid #76575b;background:#27202a;border-radius:14px;padding:20px;margin:24px 0}
+.owner-db-warning{padding:16px;border-left:3px solid #e6a0a0;background:#392932;line-height:1.65;color:#f2c4cc}
+.owner-db-success{margin:18px;padding:14px;border:1px solid #4e8a70;background:#15342a;color:#aef0d2;border-radius:9px;font-size:12px}
+.backup-list{display:grid;gap:10px;margin:16px 0}.backup-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px;border:1px solid #334151;border-radius:10px}
+.backup-item strong,.backup-item small{display:block}.backup-item small{color:#82949f;margin-top:5px}
 @media(min-width:741px) and (max-width:950px){.sidebar nav button{justify-content:center;padding:12px}.sidebar nav button .nav-label{display:none}.sidebar nav button .nav-svg{width:22px;height:22px}}
 @media(max-width:740px){
  html,body,#orbita-root{min-width:320px;max-width:100%;overflow-x:hidden}
