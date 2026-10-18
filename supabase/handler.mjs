@@ -1,3 +1,4 @@
+import {createMaintenance} from './maintenance.mjs';
 import {subjects,validateLesson,duration,dateKey} from '../src/model.mjs';
 import {isManager,canCreateAccount,canManageAccount,canTeachGroup} from '../src/roles.mjs';
 
@@ -29,6 +30,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
  async function one(table,id){return (await backend(query(table,`id=eq.${id}&limit=1`)))[0];}
  async function all(table,order){const result=[];for(let offset=0;;offset+=1000){const rows=await backend(query(table,`order=${order}&limit=1000&offset=${offset}`));result.push(...rows);if(rows.length<1000)return result;}}
  async function audit(p,action,target){await backend(query('audit'),{method:'POST',body:{actor:p.id,action,target}});}
+ const maintenance=createMaintenance({url,serviceKey,fetchImpl,all,backend,now});
  async function save(table,payload,metadata){
   if(!uuid(payload.id)||!Number.isInteger(payload.version)||payload.version<0)fail('Некорректный ID или версия');
   const record={...metadata,payload,version:payload.version+1};
@@ -49,7 +51,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
    if(!Number.isFinite(claims.iat)||claims.iat<=p.invalid_before)fail('Доступ обновлён администратором. Войдите заново.',401);
    const route=new URL(request.url).pathname.split('/calendar-api/')[1]||'';
    const isAdmin=()=>{if(!isManager(p.role))fail('Доступ только для администратора',403);};
-   let b={};if(!['GET','HEAD'].includes(request.method)){const raw=await request.text();if(new TextEncoder().encode(raw).length>150000)fail('Запрос слишком большой',413);try{b=JSON.parse(raw||'{}');}catch{fail('Некорректный JSON');}}
+   let b={};if(!['GET','HEAD'].includes(request.method)){const raw=await request.text();if(new TextEncoder().encode(raw).length>(route==='maintenance/restore'?10_000_000:150000))fail('Запрос слишком большой',413);try{b=JSON.parse(raw||'{}');}catch{fail('Некорректный JSON');}}
    if(route==='session'&&request.method==='GET')return json({demo:false,vkOnly:false,user:{...publicProfile(p),...passwordStatus(p)}});
    if(route==='password'&&request.method==='POST'){
     passwordCheck(b.password);await backend('/auth/v1/user',{method:'PUT',token,body:{password:b.password}});
@@ -72,6 +74,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
     const profiles=await all('profiles','id');const byId=new Map(profiles.map(profile=>[profile.id,profile]));
     return json({entries:rows.slice(0,100).map(r=>({id:String(r.id),at:r.at,action:r.action,target:r.target,actor:r.actor,actorName:byId.get(r.actor)?.name||'Сотрудник',actorLogin:byId.get(r.actor)?.login||''})),nextCursor:rows.length>100?String(rows[99].id):null});
    }
+   if(route.startsWith('maintenance/'))return json(await maintenance.handle(route,request.method,b,p));
    if(route==='bootstrap'&&request.method==='GET'){
     // All active teachers see the same calendar. Only admins manage groups/accounts.
     const [groups,lessons,profiles]=await Promise.all([all('groups','id'),all('lessons','date,start,id'),all('profiles','name,id')]);
