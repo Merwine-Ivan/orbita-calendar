@@ -31,18 +31,32 @@ test('anonymous, disabled, expired and pre-reset sessions cannot read calendar',
  tables.profiles[1].disabled=false;tables.profiles[1].invalid_before=2000;assert.equal((await req('bootstrap')).status,401);
 });
 
-test('only managers can trash or restore lessons; records and audit survive the round trip',async()=>{
+test('assigned teacher can delete and restore own lessons without losing attendance and reports',async()=>{
  const {req,tables}=fixture();
  const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',status:'done',attendance:{},report:'Preserve this report',version:0};
  assert.equal((await req(`lessons/${lid}`,teacher,'PUT',lesson)).status,200);
- assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:1,deleted:true})).status,403);
- assert.equal((await req(`lessons/${lid}`,admin,'PUT',{...lesson,version:1,deleted:true})).status,200);
- assert.equal((await(await req('bootstrap',teacher)).json()).lessons.length,0);
- assert.equal((await(await req('bootstrap',admin)).json()).lessons[0].report,'Preserve this report');
- assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:2,deleted:false})).status,403);
- assert.equal((await req(`lessons/${lid}`,admin,'PUT',{...lesson,version:2,deleted:false})).status,200);
+ assert.equal((await req(`lessons/${lid}`,other,'PUT',{...lesson,version:1,deleted:true})).status,403);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:1,deleted:true})).status,200);
+ assert.equal(tables.lessons[0].payload.deleted,true);
+ assert.equal((await(await req('bootstrap',teacher)).json()).lessons[0].deleted,true);
+ assert.equal((await(await req('bootstrap',other)).json()).lessons.length,0);
+ assert.equal((await req(`lessons/${lid}`,other,'PUT',{...lesson,version:2,deleted:false})).status,403);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:2,deleted:false})).status,200);
  assert.equal((await(await req('bootstrap',teacher)).json()).lessons[0].report,'Preserve this report');
- assert.ok(tables.audit.some(a=>a.action==='delete:lessons'));assert.ok(tables.audit.some(a=>a.action==='restore:lessons'));
+ assert.ok(tables.audit.some(a=>a.action==='delete:lessons'&&a.actor===teacher));
+ assert.ok(tables.audit.some(a=>a.action==='restore:lessons'&&a.actor===teacher));
+});
+
+test('soft deletion cannot be used to change lesson fields or hijack another group',async()=>{
+ const {req,tables}=fixture();
+ const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',status:'done',attendance:{},report:'Protected report',version:0};
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',lesson)).status,200);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:1,deleted:true,report:'Tampered'})).status,403);
+ assert.equal(tables.lessons[0].payload.deleted,false);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:1,deleted:true})).status,200);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:2,deleted:false,attendance:{fake:'present'}})).status,403);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:2,deleted:true,report:'Tampered'})).status,403);
+ assert.equal(tables.lessons[0].payload.report,'Protected report');
 });
 
 test('group archive and restore are manager-only and preserve students and source metadata',async()=>{
@@ -286,7 +300,8 @@ test('a teacher creates a custom subject and weekly schedule, and only that teac
  assert.equal((await req(`lessons/${lessonId}`,other,'PUT',{...lesson,version:1,report:'wrong'})).status,403);
  assert.equal((await req(`lessons/${lessonId}`,teacher,'PUT',{...lesson,version:1,report:'Готовимся к олимпиаде'})).status,200);
  assert.equal(tables.lessons[0].payload.report,'Готовимся к олимпиаде');
- assert.equal((await req(`lessons/${lessonId}`,teacher,'PUT',{...lesson,version:2,deleted:true})).status,403);
+ assert.equal((await req(`lessons/${lessonId}`,teacher,'PUT',{...lesson,version:2,report:'Готовимся к олимпиаде',deleted:true})).status,200);
+ assert.equal((await req(`lessons/${lessonId}`,teacher,'PUT',{...lesson,version:3,report:'Готовимся к олимпиаде',deleted:false})).status,200);
 });
 
 test('teacher cannot take over an existing group, reassign schedule, or change the subject of an assigned group',async()=>{
