@@ -14,3 +14,19 @@ test('custom subject weekly schedule generates only its lessons in the chosen mo
  assert.ok(result.every(l=>l.groupId==='own'&&l.date.startsWith('2026-11-')&&l.start==='16:00'));
  assert.equal(recurrence([own,other],2026,10,result).length,4);
 });
+
+test('weekly, biweekly and one-time recurrence honor start date and do not replicate deleted lessons',()=>{
+ const weekly={id:'weekly',schedule:[{day:2,start:'10:00',end:'11:00',repeat:'weekly',effectiveFrom:'2026-10-01'}]};
+ const biweekly={id:'biweekly',schedule:[{day:2,start:'14:00',end:'15:00',repeat:'biweekly',effectiveFrom:'2026-10-03'}]};
+ const once={id:'once',schedule:[{day:2,start:'16:00',end:'17:00',repeat:'once',effectiveFrom:'2026-10-20'}]};
+ assert.deepEqual(recurrence([weekly],2026,9,[]).map(x=>x.date),['2026-10-06','2026-10-13','2026-10-20','2026-10-27']);
+ assert.deepEqual(recurrence([biweekly],2026,9,[]).map(x=>x.date),['2026-10-06','2026-10-20']);
+ assert.deepEqual(recurrence([once],2026,9,[]).map(x=>x.date),['2026-10-20']);
+ assert.equal(recurrence([once],2026,10,[]).length,0);
+ const old={...recurrence([weekly],2026,9,[])[0],deleted:true};
+ assert.equal(recurrence([weekly],2026,9,[old]).length,3);
+});
+test('biweekly repeats consistently across month boundaries',()=>{
+ const g={id:'period',schedule:[{day:2,start:'10:00',end:'11:00',repeat:'biweekly',effectiveFrom:'2026-10-27'}]};
+ assert.deepEqual(recurrence([g],2026,10,[]).map(x=>x.date),['2026-11-10','2026-11-24']);
+});

@@ -13,10 +13,25 @@ export function validateLesson(l) {
   if(typeof l.report!=='string' || l.report.length>10000) throw Error('Отчёт должен быть короче 10 000 символов');
 }
 export function recurrence(groups,year,month,existing) {
+  // Legacy schedule slots without repeat remain weekly; never recreate a soft-deleted lesson.
+  const dayMs=86400000;
+  const utcDate=iso=>Date.parse(`${iso}T00:00:00Z`);
+
   const out=[];
   for(let day=1;day<=new Date(year,month+1,0).getDate();day++) {
     const d=new Date(year,month,day), date=dateKey(d);
-    for(const g of groups.filter(g=>!g.archived)) for(const s of g.schedule||[]) if(s.active!==false&&s.day===d.getDay()&&(!s.effectiveFrom||date>=s.effectiveFrom)&&(!s.effectiveTo||date<=s.effectiveTo)&&!existing.some(l=>l.groupId===g.id&&l.date===date&&l.start===s.start)&&!out.some(l=>l.groupId===g.id&&l.date===date&&l.start===s.start)) out.push({id:crypto.randomUUID(),groupId:g.id,date,start:s.start,end:s.end,...(s.teacherId?{teacherId:s.teacherId}:{}),status:'planned',attendance:{},report:'',version:0});
+    for(const g of groups.filter(g=>!g.archived)) for(const s of g.schedule||[]) if(
+      s.active!==false && s.day===d.getDay() &&
+      (!s.effectiveFrom||date>=s.effectiveFrom) && (!s.effectiveTo||date<=s.effectiveTo) &&
+      (s.repeat!=='once'||date===s.effectiveFrom) &&
+      (s.repeat!=='biweekly'||(s.effectiveFrom && (()=>{
+        const start=new Date(`${s.effectiveFrom}T12:00:00`);
+        const first=new Date(start);first.setDate(start.getDate()+(s.day-start.getDay()+7)%7);
+        return (utcDate(date)-utcDate(dateKey(first)))%(14*dayMs)===0;
+      })())) &&
+      !existing.some(l=>l.groupId===g.id&&l.date===date&&l.start===s.start) &&
+      !out.some(l=>l.groupId===g.id&&l.date===date&&l.start===s.start)
+    ) out.push({id:crypto.randomUUID(),groupId:g.id,date,start:s.start,end:s.end,...(s.teacherId?{teacherId:s.teacherId}:{}),status:'planned',attendance:{},report:'',version:0});
   }
   return out;
 }

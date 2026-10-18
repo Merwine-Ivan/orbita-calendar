@@ -145,7 +145,12 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       }
       if (route === "bootstrap" && request.method === "GET") {
         const [groups, lessons, profiles] = await Promise.all([all("groups", "id"), all("lessons", "date,start,id"), all("profiles", "name,id")]);
-        return json({ groups: groups.map((r) => ({ ...r.payload, version: r.version })), lessons: lessons.filter((r) => isManager(p.role) || !r.payload.deleted).map((r) => ({ ...r.payload, version: r.version })), users: profiles.map((profile) => ({ ...publicProfile(profile), ...isManager(p.role) || profile.id === p.id ? passwordStatus(profile) : {}, ...isManager(p.role) ? { lastSeenAt: profile.last_seen_at || null, online: !profile.disabled && Date.parse(profile.last_seen_at) <= now() && Date.parse(profile.last_seen_at) > now() - 9e4 } : {} })) });
+        const groupLookup = new Map(groups.map((g) => [g.id, g]));
+        return json({ groups: groups.map((r) => ({ ...r.payload, version: r.version })), lessons: lessons.filter((r) => {
+          if (isManager(p.role) || !r.payload.deleted) return true;
+          const g = groupLookup.get(r.group_id);
+          return !!g && canTeachGroup(p, { teacherId: r.payload.teacherId ?? g.teacher_id, subject: g.payload.subject, createdBy: g.payload.createdBy });
+        }).map((r) => ({ ...r.payload, version: r.version })), users: profiles.map((profile) => ({ ...publicProfile(profile), ...isManager(p.role) || profile.id === p.id ? passwordStatus(profile) : {}, ...isManager(p.role) ? { lastSeenAt: profile.last_seen_at || null, online: !profile.disabled && Date.parse(profile.last_seen_at) <= now() && Date.parse(profile.last_seen_at) > now() - 9e4 } : {} })) });
       }
       const match = route.match(/^(groups|lessons)\/([0-9a-f-]+)$/i);
       if (match && request.method === "PUT") {
@@ -177,13 +182,16 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           const slots = /* @__PURE__ */ new Set();
           for (const s of b.schedule) {
             if (!Number.isInteger(s.day) || s.day < 0 || s.day > 6 || ![s.start, s.end].every((t2) => typeof t2 === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t2)) || duration(s.start, s.end) <= 0) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
-            if ([s.effectiveFrom, s.effectiveTo].some((d) => d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) || s.effectiveFrom && s.effectiveTo && s.effectiveFrom > s.effectiveTo) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0434\u0430\u0442\u044B \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
+            if ([s.effectiveFrom, s.effectiveTo].some((d) => d && (!/^\d{4}-\d{2}-\d{2}$/.test(d) || dateKey(/* @__PURE__ */ new Date(`${d}T12:00:00`)) !== d)) || s.effectiveFrom && s.effectiveTo && s.effectiveFrom > s.effectiveTo) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0434\u0430\u0442\u044B \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
+            if (s.repeat !== void 0 && !["weekly", "biweekly", "once"].includes(s.repeat)) fail("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430\u044F \u043F\u0435\u0440\u0438\u043E\u0434\u0438\u0447\u043D\u043E\u0441\u0442\u044C");
+            if (["biweekly", "once"].includes(s.repeat) && !s.effectiveFrom) fail("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u0434\u0430\u0442\u0443 \u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u044F");
+            if (s.repeat === "once" && (/* @__PURE__ */ new Date(`${s.effectiveFrom}T12:00:00`)).getDay() !== s.day) fail("\u0420\u0430\u0437\u043E\u0432\u044B\u0439 \u0443\u0440\u043E\u043A \u0434\u043E\u043B\u0436\u0435\u043D \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0442\u044C \u0441 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0439 \u0434\u0430\u0442\u043E\u0439");
             const k = `${s.day}-${s.start}-${s.effectiveFrom || ""}-${s.effectiveTo || ""}`;
             if (slots.has(k)) fail("\u041F\u043E\u0432\u0442\u043E\u0440 \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438");
             slots.add(k);
           }
           if (Boolean(previous?.payload.archived) !== Boolean(b.archived)) event = b.archived ? "archive:groups" : "restore:groups";
-          await save(table, { ...previous?.payload || {}, id, name: b.name.trim(), subject: normalizedSubject, teacherId: b.teacherId || null, createdBy: previous?.payload.createdBy || (!isManager(p.role) ? p.id : null), students: b.students.map((s) => ({ id: s.id, name: s.name.trim() })), schedule: b.schedule.map((s) => ({ day: s.day, start: s.start, end: s.end, ...s.id ? { id: s.id } : {}, effectiveFrom: s.effectiveFrom || null, effectiveTo: s.effectiveTo || null, active: s.active !== false, ...s.teacherId ? { teacherId: s.teacherId } : {} })), archived: Boolean(b.archived), version: b.version }, { teacher_id: b.teacherId });
+          await save(table, { ...previous?.payload || {}, id, name: b.name.trim(), subject: normalizedSubject, teacherId: b.teacherId || null, createdBy: previous?.payload.createdBy || (!isManager(p.role) ? p.id : null), students: b.students.map((s) => ({ id: s.id, name: s.name.trim() })), schedule: b.schedule.map((s) => ({ day: s.day, start: s.start, end: s.end, ...s.id ? { id: s.id } : {}, effectiveFrom: s.effectiveFrom || null, effectiveTo: s.effectiveTo || null, ...s.repeat ? { repeat: s.repeat } : {}, active: s.active !== false, ...s.teacherId ? { teacherId: s.teacherId } : {} })), archived: Boolean(b.archived), version: b.version }, { teacher_id: b.teacherId });
         } else {
           validateLesson(b);
           if (!uuid(b.groupId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
@@ -191,7 +199,13 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           if (!g) fail("\u0413\u0440\u0443\u043F\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430");
           const old = await one("lessons", id);
           if (b.deleted !== void 0 && typeof b.deleted !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F");
-          if (!isManager(p.role) && (old?.payload.deleted || Boolean(b.deleted) !== Boolean(old?.payload.deleted))) fail("\u0423\u0434\u0430\u043B\u044F\u0442\u044C \u0438 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u0442\u044C \u0437\u0430\u043D\u044F\u0442\u0438\u044F \u043C\u043E\u0436\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
+          const changingDeletion = Boolean(b.deleted) !== Boolean(old?.payload.deleted);
+          if (!isManager(p.role) && old?.payload.deleted && !changingDeletion) fail("\u0423\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435 \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C", 403);
+          if (!isManager(p.role) && changingDeletion) {
+            if (!old) fail("\u0423\u0434\u0430\u043B\u044F\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D\u043D\u044B\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u044F", 403);
+            const existing = old.payload;
+            if (b.groupId !== existing.groupId || b.date !== existing.date || b.start !== existing.start || b.end !== existing.end || b.status !== existing.status || b.report !== existing.report || JSON.stringify(b.attendance) !== JSON.stringify(existing.attendance) || (b.teacherId ?? null) !== (existing.teacherId ?? null)) fail("\u041F\u0440\u0438 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0438 \u0438 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0438 \u043D\u0435\u043B\u044C\u0437\u044F \u043C\u0435\u043D\u044F\u0442\u044C \u0441\u043E\u0434\u0435\u0440\u0436\u0430\u043D\u0438\u0435 \u0443\u0440\u043E\u043A\u0430", 403);
+          }
           if (Boolean(b.deleted) !== Boolean(old?.payload.deleted)) event = b.deleted ? "delete:lessons" : "restore:lessons";
           const permitted = (group, lesson) => canTeachGroup(p, group && { teacherId: lesson?.teacherId ?? group.teacher_id, subject: group.payload.subject, createdBy: group.payload.createdBy });
           if (!permitted(g, b) || old && !permitted(await one("groups", old.group_id), old.payload)) fail("\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u0432\u043E\u0438 \u0433\u0440\u0443\u043F\u043F\u044B \u043F\u043E \u0440\u0430\u0437\u0440\u0435\u0448\u0451\u043D\u043D\u044B\u043C \u043F\u0440\u0435\u0434\u043C\u0435\u0442\u0430\u043C", 403);

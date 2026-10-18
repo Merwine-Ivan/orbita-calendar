@@ -11,3 +11,8 @@
 .password-temporary{color:#efc581;font-size:12px}
 .identity-form{margin:20px 0}.identity-form label{display:flex;flex-direction:column;gap:10px;margin:16px 0;font-size:12px;color:#b9c4d0}
 .danger{color:#f0a9af;border-color:#75454e}.danger:hover{background:#482b35;border-color:#c97683}
+/* Editable recurrence slot for instructor-managed schedules */
+.recurrence-slot{border:1px solid #3b4859;border-radius:12px;padding:14px;margin:12px 0;background:#171f2b}
+.recurrence-slot .form-grid{margin:8px 0;gap:10px}
+.recurrence-slot label{min-width:0}
+.recurrence-slot select,.recurrence-slot input{width:100%;min-width:0}
