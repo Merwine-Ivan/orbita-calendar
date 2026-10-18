@@ -1,0 +1,23 @@
+{
+  "name": "orbita-calendar",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-all.mjs",
+    "build:web": "node scripts/build.mjs",
+    "build:tilda": "node scripts/build-tilda.mjs",
+    "dev": "node server/server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "admin": "node server/admin.mjs",
+    "admin:vk": "node server/admin-vk.mjs"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@vkontakte/vk-bridge": "^2.15.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

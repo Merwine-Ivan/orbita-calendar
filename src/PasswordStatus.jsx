@@ -1,0 +1,3 @@
+import React from 'react';
+import {activityTime} from './Presence.jsx';
+export function PasswordStatus({person}){return <><span className={person.mustChange?'password-temporary':'presence-online'}>{person.mustChange?'Временный — требуется смена':'Пароль изменён'}</span>{person.mustChange&&<small className="presence-time">{person.temporaryPasswordAt?`Выдан: ${activityTime(person.temporaryPasswordAt)}`:'Дата выдачи не зафиксирована'}</small>}<small className="presence-time">{person.passwordChangedAt?`Последняя смена: ${activityTime(person.passwordChangedAt)}`:person.mustChange?'Сотрудник ещё не менял пароль':'Дата смены не зафиксирована'}</small></>;}
