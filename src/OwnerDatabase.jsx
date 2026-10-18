@@ -1,25 +1,25 @@
 import React,{useEffect,useState} from 'react';
 import {request} from './api.mjs';
 
-const scopes=[['trash','Очистить корзину занятий'],['archive','Очистить архив групп'],['group','Удалить архивную группу'],['period','Удалить занятия за период'],['schedule','Очистить правила расписания'],['reset','Полностью очистить рабочий журнал'],['imports','Отдельно очистить историю импортов']];
+const scopes=[['trash','Очистить корзину занятий'],['lesson','Удалить одно занятие из корзины'],['archive','Очистить архив групп'],['group','Удалить архивную группу'],['period','Удалить занятия за период'],['schedule','Очистить правила расписания'],['reset','Полностью очистить рабочий журнал'],['imports','Отдельно очистить историю импортов']];
 function saveFile(filename,data){const url=URL.createObjectURL(new Blob([data],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);}
 function fmt(x){try{return new Date(x).toLocaleString('ru-RU');}catch{return String(x||'');}}
-export function OwnerDatabase({groups,onDataChanged}){
+export function OwnerDatabase({groups,lessons=[],onDataChanged}){
  const [tab,setTab]=useState('backups'),[backups,setBackups]=useState([]),[backupId,setBackupId]=useState(''),[uploadedContent,setUploadedContent]=useState('');
  const [passphrase,setPassphrase]=useState(''),[ownerPassword,setOwnerPassword]=useState(''),[mode,setMode]=useState('merge');
- const [scope,setScope]=useState('trash'),[groupId,setGroupId]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState('');
+ const [scope,setScope]=useState('trash'),[groupId,setGroupId]=useState(''),[lessonId,setLessonId]=useState(''),[from,setFrom]=useState(''),[to,setTo]=useState('');
  const [preview,setPreview]=useState(null),[confirm,setConfirm]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState(''),[error,setError]=useState('');
  const load=async()=>{const r=await request('maintenance/list');setBackups(r.backups||[]);};
  useEffect(()=>{load().catch(e=>setError('Резервное хранилище пока не готово: '+e.message));},[]);
  async function act(fn){setBusy(true);setError('');setStatus('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
- function filters(){return scope==='group'||scope==='schedule'&&groupId?{groupId}:scope==='period'?{from,to}:{ };}
+ function filters(){return scope==='lesson'?{lessonId}:scope==='group'||scope==='schedule'&&groupId?{groupId}:scope==='period'?{from,to}:{ };}
  async function downloadFile(id){const {content}=await request(`maintenance/download/${id}`);saveFile(id,content);}
  const counts=preview&&`${preview.groups} групп · ${preview.lessons} занятий · ${preview.scheduleRules} правил · ${preview.reports} отчётов · ${preview.attendanceMarks} отметок`;
  const safe=passphrase.length>=12;
  return <section className="owner-db panel" aria-label="Управление базой">
   <header className="owner-db-header"><div><p className="eyebrow">ТОЛЬКО ГЛАВНЫЙ АДМИНИСТРАТОР</p><h2>Управление базой</h2><p className="subtle">Полные зашифрованные копии и управляемая очистка. Учетные записи Auth и история аудита при восстановлении не перезаписываются.</p></div></header>
   <div className="owner-db-tabs" role="tablist">
-   {[['backups','Резервные копии'],['purge','Очистка'],['restore','Восстановление']].map(([value,label])=><button key={value} type="button" role="tab" aria-selected={tab===value} className={tab===value?'selected':''} onClick={()=>{setTab(value);setError('');setPreview(null);setConfirm('');}}>{label}</button>)}
+   {[['backups','Резервные копии'],['purge','Очистка'],['restore','Восстановление']].map(([value,label])=><button key={value} type="button" role="tab" aria-selected={tab===value} className={tab===value?'selected':''} onClick={()=>{setTab(value);setPassphrase('');setOwnerPassword('');setError('');setPreview(null);setConfirm('');}}>{label}</button>)}
   </div>
   {error&&<div role="alert" className="error">{error}</div>}
   {status&&<div role="status" className="owner-db-success">{status}</div>}
@@ -35,11 +35,12 @@ export function OwnerDatabase({groups,onDataChanged}){
    <h3>Выборочная или полная очистка</h3>
    <p className="subtle">Сначала проверка точного количества. Перед каждой очисткой сервер создаёт и проверяет зашифрованную резервную копию. Удаление выполняется одной транзакцией. Действие нельзя отменить без восстановления.</p>
    <label>Что очистить<select value={scope} onChange={e=>{setScope(e.target.value);setPreview(null);setConfirm('');}}>{scopes.map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+   {scope==='lesson'&&<label>Занятие из корзины<select value={lessonId} onChange={e=>{setLessonId(e.target.value);setPreview(null);}}><option value="">Выберите занятие</option>{lessons.filter(l=>l.deleted).map(l=><option key={l.id} value={l.id}>{l.date} {l.start} · {groups.find(g=>g.id===l.groupId)?.name||'Группа'}</option>)}</select></label>}
    {['group','schedule'].includes(scope)&&<label>{scope==='group'?'Архивная группа':'Группа (пусто — всё расписание)'}<select value={groupId} onChange={e=>{setGroupId(e.target.value);setPreview(null);}}><option value="">{scope==='schedule'?'Все группы':'Выберите группу'}</option>{groups.filter(g=>scope==='schedule'||g.archived).map(g=><option key={g.id} value={g.id}>{g.name}</option>)}</select></label>}
    {scope==='period'&&<div className="form-grid"><label>С<input type="date" value={from} onChange={e=>{setFrom(e.target.value);setPreview(null);}}/></label><label>По<input type="date" value={to} onChange={e=>{setTo(e.target.value);setPreview(null);}}/></label></div>}
    {scope==='schedule'&&<p className="subtle">Удаляются только правила автоматического расписания. Уже созданные уроки и посещаемость остаются.</p>}
    {scope==='reset'&&<p className="owner-db-warning">Полный сброс удалит все группы и уроки, включая архив и корзину. Учётные записи, аудит, историю импортов и резервные копии он сохранит.</p>}
-   <button disabled={busy||scope==='group'&&!groupId||scope==='period'&&(!from||!to)} onClick={()=>act(async()=>{const r=await request('maintenance/preview','POST',{scope,filter:filters()});setPreview(r.preview);setConfirm('');})}>Посчитать последствия</button>
+   <button disabled={busy||scope==='lesson'&&!lessonId||scope==='group'&&!groupId||scope==='period'&&(!from||!to)} onClick={()=>act(async()=>{const r=await request('maintenance/preview','POST',{scope,filter:filters()});setPreview(r.preview);setConfirm('');})}>Посчитать последствия</button>
    {preview&&<div className="owner-db-confirm"><h3>Будет затронуто</h3><strong>{counts}</strong><p className="subtle">Если состав данных изменится, сервер отменит операцию и потребует новый предпросмотр.</p>
      <label>Пароль шифрования аварийной копии<input type="password" autoComplete="new-password" value={passphrase} onChange={e=>setPassphrase(e.target.value)}/></label>
      <label>Ваш текущий пароль главного администратора<input type="password" autoComplete="current-password" value={ownerPassword} onChange={e=>setOwnerPassword(e.target.value)}/></label>

@@ -29,6 +29,7 @@ export function recurrence(groups,year,month,existing) {
         const first=new Date(start);first.setDate(start.getDate()+(s.day-start.getDay()+7)%7);
         return (utcDate(date)-utcDate(dateKey(first)))%(14*dayMs)===0;
       })())) &&
+      !(g.suppressedOccurrences||[]).some(skip=>skip.date===date&&skip.start===s.start) &&
       !existing.some(l=>l.groupId===g.id&&l.date===date&&l.start===s.start) &&
       !out.some(l=>l.groupId===g.id&&l.date===date&&l.start===s.start)
     ) out.push({id:crypto.randomUUID(),groupId:g.id,date,start:s.start,end:s.end,...(s.teacherId?{teacherId:s.teacherId}:{}),status:'planned',attendance:{},report:'',version:0});

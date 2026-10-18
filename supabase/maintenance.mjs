@@ -68,9 +68,10 @@ export function createMaintenance({url,serviceKey,fetchImpl=fetch,all,backend,no
   return result;
  };
  function scopeCheck(scope,filter){
-  if(!['trash','archive','group','period','schedule','reset','imports'].includes(scope))bad('Неизвестный режим очистки');
+  if(!['trash','lesson','archive','group','period','schedule','reset','imports'].includes(scope))bad('Неизвестный режим очистки');
   if(!filter||typeof filter!=='object'||Array.isArray(filter))bad('Некорректные фильтры');
   if(scope==='group'&&!/^[0-9a-f-]{36}$/i.test(filter.groupId||''))bad('Выберите архивную группу');
+  if(scope==='lesson'&&!/^[0-9a-f-]{36}$/i.test(filter.lessonId||''))bad('Выберите занятие из корзины');
   return {scope,filter};
  }
  async function reauthenticate(owner,ownerPassword){

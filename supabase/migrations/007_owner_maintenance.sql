@@ -36,11 +36,15 @@ BEGIN
  IF p_action <> 'preview' THEN
    LOCK TABLE public.orbita_groups,public.orbita_lessons,public.orbita_imports IN SHARE ROW EXCLUSIVE MODE;
  END IF;
- IF p_scope NOT IN ('trash','archive','group','period','schedule','reset','imports') THEN RAISE EXCEPTION 'Invalid scope'; END IF;
+ IF p_scope NOT IN ('trash','lesson','archive','group','period','schedule','reset','imports') THEN RAISE EXCEPTION 'Invalid scope'; END IF;
  IF p_filter IS NULL THEN p_filter := '{}'::jsonb; END IF;
  IF p_scope = 'group' OR (p_scope='schedule' AND p_filter ? 'groupId') THEN
    IF coalesce(p_filter->>'groupId','') !~* '^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$' THEN RAISE EXCEPTION 'Invalid group ID'; END IF;
    one_id := (p_filter->>'groupId')::uuid;
+ END IF;
+ IF p_scope='lesson' THEN
+   IF coalesce(p_filter->>'lessonId','') !~* '^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$' THEN RAISE EXCEPTION 'Invalid lesson ID'; END IF;
+   one_id := (p_filter->>'lessonId')::uuid;
  END IF;
  IF p_scope='period' THEN
    IF coalesce(p_filter->>'from','') !~ '^\d{4}-\d\d-\d\d$' OR coalesce(p_filter->>'to','') !~ '^\d{4}-\d\d-\d\d$' THEN RAISE EXCEPTION 'Invalid period'; END IF;
@@ -50,6 +54,8 @@ BEGIN
  CASE p_scope
  WHEN 'trash' THEN
    SELECT coalesce(array_agg(id), '{}'::uuid[]) INTO target_lessons FROM public.orbita_lessons WHERE payload->>'deleted'='true';
+ WHEN 'lesson' THEN
+   SELECT coalesce(array_agg(id),'{}'::uuid[]) INTO target_lessons FROM public.orbita_lessons WHERE id=one_id AND payload->>'deleted'='true';
  WHEN 'archive' THEN
    SELECT coalesce(array_agg(id), '{}'::uuid[]) INTO target_groups FROM public.orbita_groups WHERE payload->>'archived'='true';
  WHEN 'group' THEN
@@ -84,6 +90,15 @@ BEGIN
  END IF;
  IF p_expected IS NULL OR p_expected<>signature THEN RAISE EXCEPTION 'Preview is outdated, refresh it before continuing'; END IF;
  IF p_action='purge' THEN
+   IF p_scope IN ('trash','lesson','period') THEN
+     WITH occurrence AS (
+       SELECT group_id,jsonb_agg(jsonb_build_object('date',date::text,'start',left(start::text,5))) AS skips
+       FROM public.orbita_lessons WHERE id=ANY(target_lessons) GROUP BY group_id
+     )
+     UPDATE public.orbita_groups g
+       SET payload=jsonb_set(g.payload,'{suppressedOccurrences}',coalesce(g.payload->'suppressedOccurrences','[]'::jsonb)||occurrence.skips,true),version=g.version+1
+     FROM occurrence WHERE g.id=occurrence.group_id;
+   END IF;
    IF p_scope='imports' THEN
      DELETE FROM public.orbita_imports WHERE id=ANY(target_imports);
    ELSIF p_scope='schedule' THEN
