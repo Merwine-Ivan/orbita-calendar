@@ -1,0 +1,43 @@
+name: Build teacher subjects and schedules
+
+on:
+  push:
+    branches:
+      - feature/teacher-owned-subjects
+    paths:
+      - orbita_teacher_schedule_v2.zip
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+      - name: Extract checked source package
+        run: unzip -q -o orbita_teacher_schedule_v2.zip
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run security and model tests
+        run: npm test
+      - name: Build GitHub Pages and Supabase function
+        run: node scripts/build-shared.mjs
+      - name: Stage compiled public UI and reviewed source files
+        run: |
+          cp shared-dist/index.html index.html
+          git add index.html src/ tests/ supabase/handler.mjs supabase/public-config.json supabase/functions/calendar-api/index.ts scripts/build-shared.mjs package.json
+      - name: Commit generated files to this feature branch
+        run: |
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Build teacher-managed subjects and schedules [skip ci]"
+            git push
+          fi
