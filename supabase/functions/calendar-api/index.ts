@@ -1,3 +1,151 @@
+// supabase/maintenance.mjs
+var BACKUP_BUCKET = "orbita-private-backups";
+var FORMAT = "orbita-backup-v1";
+var encoder = new TextEncoder();
+var decoder = new TextDecoder();
+var encode64 = (bytes) => {
+  let text = "";
+  for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  return btoa(text);
+};
+var decode64 = (txt) => Uint8Array.from(atob(txt), (x) => x.charCodeAt(0));
+function bad(message, status = 400) {
+  throw Object.assign(Error(message), { status });
+}
+function backupId(value) {
+  if (typeof value !== "string" || !/^[a-f0-9-]{36}\.orbita$/i.test(value)) bad("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0438\u043C\u044F \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438");
+  return value;
+}
+function passwordCheck(v) {
+  if (typeof v !== "string" || v.length < 12 || v.length > 128) bad("\u041F\u0430\u0440\u043E\u043B\u044C \u0448\u0438\u0444\u0440\u043E\u0432\u0430\u043D\u0438\u044F: \u043E\u0442 12 \u0434\u043E 128 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432");
+}
+function responseProblem(response) {
+  if (response.status === 404) bad("\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0435 \u0445\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0435 \u0438\u043B\u0438 \u0444\u0430\u0439\u043B. \u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u0435 \u043C\u0438\u0433\u0440\u0430\u0446\u0438\u044E 007.", 503);
+  bad("\u0420\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0435 \u0445\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E", 502);
+}
+async function encryptBackup(snapshot, password) {
+  passwordCheck(password);
+  const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12));
+  const material = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 21e4, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+  const plain = encoder.encode(JSON.stringify(snapshot));
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", plain)), (b) => b.toString(16).padStart(2, "0")).join("");
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plain));
+  return JSON.stringify({ type: "orbita-encrypted-backup", version: 1, kdf: "PBKDF2-SHA256", iterations: 21e4, cipher: "AES-256-GCM", salt: encode64(salt), iv: encode64(iv), payload: encode64(ciphertext), digest });
+}
+async function decryptBackup(content, password, projectId) {
+  passwordCheck(password);
+  if (typeof content !== "string" || content.length > 1e7) bad("\u0420\u0435\u0437\u0435\u0440\u0432\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u0430\u044F", 413);
+  let wrapper;
+  try {
+    wrapper = JSON.parse(content);
+  } catch {
+    bad("\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u0444\u043E\u0440\u043C\u0430\u0442 \u0437\u0430\u0448\u0438\u0444\u0440\u043E\u0432\u0430\u043D\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438");
+  }
+  if (wrapper?.type !== "orbita-encrypted-backup" || wrapper?.version !== 1 || wrapper.iterations !== 21e4 || wrapper.cipher !== "AES-256-GCM" || wrapper.kdf !== "PBKDF2-SHA256") bad("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0444\u043E\u0440\u043C\u0430\u0442 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438");
+  let snapshot;
+  try {
+    const salt = decode64(wrapper.salt), iv = decode64(wrapper.iv), payload = decode64(wrapper.payload);
+    if (salt.length !== 16 || iv.length !== 12 || payload.length < 16) bad("\u041F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F");
+    const material = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]);
+    const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 21e4, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    snapshot = JSON.parse(decoder.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, payload)));
+  } catch {
+    bad("\u041D\u0435\u0432\u0435\u0440\u043D\u044B\u0439 \u043F\u0430\u0440\u043E\u043B\u044C \u0438\u043B\u0438 \u043F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F", 422);
+  }
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(JSON.stringify(snapshot)))), (b) => b.toString(16).padStart(2, "0")).join("");
+  if (wrapper.digest !== hash) bad("\u041A\u043E\u043D\u0442\u0440\u043E\u043B\u044C\u043D\u0430\u044F \u0441\u0443\u043C\u043C\u0430 \u043A\u043E\u043F\u0438\u0438 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442");
+  if (snapshot?.format !== FORMAT || snapshot?.project !== projectId || !snapshot.rows || !["groups", "lessons", "profiles", "audit", "imports"].every((k) => Array.isArray(snapshot.rows[k]))) bad("\u041A\u043E\u043F\u0438\u044F \u043D\u0435\u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u0430 \u0441 \u044D\u0442\u0438\u043C \u043F\u0440\u043E\u0435\u043A\u0442\u043E\u043C");
+  return snapshot;
+}
+function createMaintenance({ url, serviceKey, fetchImpl = fetch, all, backend, now = Date.now }) {
+  const projectId = new URL(url).hostname.split(".")[0];
+  const storage = async (path, { method = "GET", data, contentType = "application/json" } = {}) => {
+    const r = await fetchImpl(`${url}/storage/v1/${path}`, { method, headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, "Content-Type": contentType, "Cache-Control": "no-store" }, body: data });
+    if (!r.ok) responseProblem(r);
+    return r;
+  };
+  async function loadSnapshot() {
+    const [groups, lessons, profiles, audit, imports] = await Promise.all([all("groups", "id"), all("lessons", "date,start,id"), all("profiles", "id"), all("audit", "id"), all("imports", "id")]);
+    const safeProfiles = profiles.map(({ id, login, name, role, subjects: subjects2, disabled, must_change }) => ({ id, login, name, role, subjects: subjects2, disabled, must_change }));
+    return { format: FORMAT, project: projectId, createdAt: new Date(now()).toISOString(), note: "Auth accounts and password hashes are not included; audit and profiles are export-only and are never overwritten during restore.", rows: { groups, lessons, profiles: safeProfiles, audit, imports } };
+  }
+  async function putEncrypted(passphrase) {
+    const snapshot = await loadSnapshot();
+    const content = await encryptBackup(snapshot, passphrase);
+    const id = `${crypto.randomUUID()}.orbita`;
+    await storage(`object/${BACKUP_BUCKET}/${id}`, { method: "POST", contentType: "application/json", data: content });
+    const verify = await (await storage(`object/${BACKUP_BUCKET}/${id}`)).text();
+    if (verify !== content) bad("\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438 \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0430: \u043E\u0447\u0438\u0441\u0442\u043A\u0430 \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430", 503);
+    return { id, createdAt: snapshot.createdAt, groups: snapshot.rows.groups.length, lessons: snapshot.rows.lessons.length, profiles: snapshot.rows.profiles.length, imports: snapshot.rows.imports.length };
+  }
+  async function getEncrypted(id) {
+    return (await storage(`object/${BACKUP_BUCKET}/${backupId(id)}`)).text();
+  }
+  async function list() {
+    const r = await storage(`object/list/${BACKUP_BUCKET}`, { method: "POST", data: JSON.stringify({ prefix: "", limit: 100, sortBy: { column: "created_at", order: "desc" } }) });
+    return (await r.json()).filter((x) => /^[a-f0-9-]{36}\.orbita$/i.test(x.name)).map((x) => ({ id: x.name, createdAt: x.created_at, size: x.metadata?.size || 0 }));
+  }
+  const rpc = async (action, scope, filter, expected, actor, snapshot) => {
+    const result = await backend("/rest/v1/rpc/orbita_maintenance", { method: "POST", body: { p_action: action, p_scope: scope, p_filter: filter || {}, p_expected: expected || "", p_actor: actor, ...snapshot ? { p_snapshot: snapshot } : {} } });
+    return result;
+  };
+  function scopeCheck(scope, filter) {
+    if (!["trash", "archive", "group", "period", "schedule", "reset", "imports"].includes(scope)) bad("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u043E\u0447\u0438\u0441\u0442\u043A\u0438");
+    if (!filter || typeof filter !== "object" || Array.isArray(filter)) bad("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0444\u0438\u043B\u044C\u0442\u0440\u044B");
+    if (scope === "group" && !/^[0-9a-f-]{36}$/i.test(filter.groupId || "")) bad("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0430\u0440\u0445\u0438\u0432\u043D\u0443\u044E \u0433\u0440\u0443\u043F\u043F\u0443");
+    return { scope, filter };
+  }
+  async function reauthenticate(owner, ownerPassword) {
+    if (typeof ownerPassword !== "string" || !ownerPassword) bad("\u041F\u043E\u0432\u0442\u043E\u0440\u043D\u043E \u0432\u0432\u0435\u0434\u0438\u0442\u0435 \u043F\u0430\u0440\u043E\u043B\u044C \u0432\u043B\u0430\u0434\u0435\u043B\u044C\u0446\u0430", 403);
+    try {
+      const result = await backend("/auth/v1/token?grant_type=password", { method: "POST", body: { email: `${owner.login}@users.orbita.invalid`, password: ownerPassword } });
+      if (result?.user?.id !== owner.id) bad("\u041F\u043E\u0432\u0442\u043E\u0440\u043D\u0430\u044F \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u044F \u043D\u0435 \u0443\u0434\u0430\u043B\u0430\u0441\u044C", 403);
+    } catch {
+      bad("\u041F\u0430\u0440\u043E\u043B\u044C \u0433\u043B\u0430\u0432\u043D\u043E\u0433\u043E \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440\u0430 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D", 403);
+    }
+  }
+  async function handle(route, method, body, actor) {
+    if (actor.role !== "owner") bad("\u0422\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u044B\u0439 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440 \u0443\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u044B\u043C\u0438 \u043A\u043E\u043F\u0438\u044F\u043C\u0438 \u0438 \u043E\u0447\u0438\u0441\u0442\u043A\u043E\u0439", 403);
+    if (route === "maintenance/list" && method === "GET") return { backups: await list() };
+    if (route === "maintenance/backup" && method === "POST") return { backup: await putEncrypted(body.passphrase) };
+    if (route.startsWith("maintenance/download/") && method === "GET") {
+      const id = route.slice("maintenance/download/".length);
+      const content = await getEncrypted(id);
+      return { id, content };
+    }
+    if (route === "maintenance/preview" && method === "POST") {
+      const { scope, filter } = scopeCheck(body.scope, body.filter || {});
+      return { preview: await rpc("preview", scope, filter, "", actor.id) };
+    }
+    if (route === "maintenance/purge" && method === "POST") {
+      const { scope, filter } = scopeCheck(body.scope, body.filter || {});
+      if (body.confirmation !== "\u0423\u0414\u0410\u041B\u0418\u0422\u042C \u041D\u0410\u0412\u0421\u0415\u0413\u0414\u0410") bad("\u0412\u0432\u0435\u0434\u0438\u0442\u0435 \u0444\u0440\u0430\u0437\u0443 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u044F");
+      if (typeof body.signature !== "string" || body.signature.length !== 32) bad("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440\u0438\u0442\u0435 \u043F\u043E\u0441\u043B\u0435\u0434\u0441\u0442\u0432\u0438\u044F");
+      await reauthenticate(actor, body.ownerPassword);
+      const fresh = await rpc("preview", scope, filter, "", actor.id);
+      if (fresh.signature !== body.signature) bad("\u0414\u0430\u043D\u043D\u044B\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0438\u0441\u044C \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440\u0430 \u2014 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443", 409);
+      const backup = await putEncrypted(body.passphrase);
+      const result = await rpc("purge", scope, filter, body.signature, actor.id);
+      return { result, backup };
+    }
+    if (route === "maintenance/restore" && method === "POST") {
+      if (!["merge", "replace"].includes(body.mode)) bad("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0440\u0435\u0436\u0438\u043C \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F");
+      if (body.confirmation !== "\u0412\u041E\u0421\u0421\u0422\u0410\u041D\u041E\u0412\u0418\u0422\u042C \u0414\u0410\u041D\u041D\u042B\u0415") bad("\u041F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435");
+      await reauthenticate(actor, body.ownerPassword);
+      const content = body.uploadedContent ? body.uploadedContent : await getEncrypted(body.backupId);
+      const snapshot = await decryptBackup(content, body.passphrase, projectId);
+      const current = await rpc("preview", "reset", {}, "", actor.id);
+      if (body.signature !== current.signature) bad("\u0420\u0430\u0431\u043E\u0447\u0430\u044F \u0431\u0430\u0437\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C \u2014 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440", 409);
+      const emergencyBackup = await putEncrypted(body.passphrase);
+      const result = await rpc(body.mode === "replace" ? "restore-replace" : "restore-merge", "reset", {}, current.signature, actor.id, snapshot);
+      return { result, emergencyBackup };
+    }
+    bad("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 \u0441 \u0431\u0430\u0437\u043E\u0439", 404);
+  }
+  return { handle, loadSnapshot };
+}
+
 // src/model.mjs
 var subjects = ["\u0410\u043D\u0433\u043B\u0438\u0439\u0441\u043A\u0438\u0439", "\u041A\u0438\u0442\u0430\u0439\u0441\u043A\u0438\u0439", "\u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435"];
 var dateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -24,7 +172,7 @@ var passwordStatus = (p) => ({ passwordChangedAt: p.password_changed_at || null,
 function fail(message, status = 400) {
   throw Object.assign(Error(message), { status });
 }
-function passwordCheck(p) {
+function passwordCheck2(p) {
   if (typeof p !== "string" || p.length < 12 || p.length > 128) fail("\u041F\u0430\u0440\u043E\u043B\u044C: \u043E\u0442 12 \u0434\u043E 128 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432");
 }
 function loginCheck(v) {
@@ -72,6 +220,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
   async function audit(p, action, target) {
     await backend(query("audit"), { method: "POST", body: { actor: p.id, action, target } });
   }
+  const maintenance = createMaintenance({ url, serviceKey, fetchImpl, all, backend, now });
   async function save(table, payload, metadata) {
     if (!uuid(payload.id) || !Number.isInteger(payload.version) || payload.version < 0) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0438\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u044F");
     const record = { ...metadata, payload, version: payload.version + 1 };
@@ -108,7 +257,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       let b = {};
       if (!["GET", "HEAD"].includes(request.method)) {
         const raw = await request.text();
-        if (new TextEncoder().encode(raw).length > 15e4) fail("\u0417\u0430\u043F\u0440\u043E\u0441 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439", 413);
+        if (new TextEncoder().encode(raw).length > (route === "maintenance/restore" ? 1e7 : 15e4)) fail("\u0417\u0430\u043F\u0440\u043E\u0441 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439", 413);
         try {
           b = JSON.parse(raw || "{}");
         } catch {
@@ -117,7 +266,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       }
       if (route === "session" && request.method === "GET") return json({ demo: false, vkOnly: false, user: { ...publicProfile(p), ...passwordStatus(p) } });
       if (route === "password" && request.method === "POST") {
-        passwordCheck(b.password);
+        passwordCheck2(b.password);
         await backend("/auth/v1/user", { method: "PUT", token, body: { password: b.password } });
         await backend(query("profiles", `id=eq.${p.id}`), { method: "PATCH", body: { must_change: false, password_changed_at: new Date(now()).toISOString(), temporary_password_at: null } });
         await audit(p, "password", p.id);
@@ -143,6 +292,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         const byId = new Map(profiles.map((profile) => [profile.id, profile]));
         return json({ entries: rows.slice(0, 100).map((r) => ({ id: String(r.id), at: r.at, action: r.action, target: r.target, actor: r.actor, actorName: byId.get(r.actor)?.name || "\u0421\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A", actorLogin: byId.get(r.actor)?.login || "" })), nextCursor: rows.length > 100 ? String(rows[99].id) : null });
       }
+      if (route.startsWith("maintenance/")) return json(await maintenance.handle(route, request.method, b, p));
       if (route === "bootstrap" && request.method === "GET") {
         const [groups, lessons, profiles] = await Promise.all([all("groups", "id"), all("lessons", "date,start,id"), all("profiles", "name,id")]);
         const groupLookup = new Map(groups.map((g) => [g.id, g]));
@@ -225,7 +375,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         const login = loginCheck(b.login);
         const temporary = b.useDefault === true ? defaultTemporaryPassword : b.password;
         if (b.useDefault === true && !temporary) fail("\u041E\u0431\u0449\u0438\u0439 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u044B\u0439 \u043F\u0430\u0440\u043E\u043B\u044C \u0435\u0449\u0451 \u043D\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D \u043D\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435", 503);
-        passwordCheck(temporary);
+        passwordCheck2(temporary);
         if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 80) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u043C\u044F \u0438 \u0440\u043E\u043B\u044C");
         const assigned = b.role === "teacher" ? allowedSubjects(b.subjects || []) : [];
         const created = await backend("/auth/v1/admin/users", { method: "POST", body: { email: `${login}@users.orbita.invalid`, password: temporary, email_confirm: true } });
@@ -276,7 +426,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         if (account[2] === "/password" && request.method === "POST") {
           const temporary = b.useDefault === true ? defaultTemporaryPassword : b.password;
           if (b.useDefault === true && !temporary) fail("\u041E\u0431\u0449\u0438\u0439 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u044B\u0439 \u043F\u0430\u0440\u043E\u043B\u044C \u0435\u0449\u0451 \u043D\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0435\u043D \u043D\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435", 503);
-          passwordCheck(temporary);
+          passwordCheck2(temporary);
           await backend(query("profiles", `id=eq.${id}`), { method: "PATCH", body: { must_change: true, invalid_before: Math.floor(now() / 1e3), temporary_password_at: new Date(now()).toISOString() } });
           await backend(`/auth/v1/admin/users/${id}`, { method: "PUT", body: { password: temporary } });
           await audit(p, "reset:user", id);
