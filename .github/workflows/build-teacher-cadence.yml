@@ -1,0 +1,40 @@
+name: Test teacher lesson deletion and schedule cadence
+on:
+  push:
+    branches:
+      - feature/teacher-lesson-deletion-and-recurrence
+    paths:
+      - orbita_schedule_fixes_source.zip
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+      - name: Extract reviewed patch
+        run: unzip -q -o orbita_schedule_fixes_source.zip
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Run unit tests
+        run: npm test
+      - name: Build Pages and Supabase function
+        run: node scripts/build-shared.mjs
+      - name: Commit built artifacts to feature branch
+        run: |
+          cp shared-dist/index.html index.html
+          git add index.html src/App.jsx src/model.mjs src/styles.css supabase/handler.mjs supabase/functions/calendar-api/index.ts tests/model.test.mjs tests/supabase.test.mjs
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Build teacher lesson deletion and recurrence [skip ci]"
+            git push
+          fi
