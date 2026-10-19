@@ -5,7 +5,7 @@ const config=JSON.parse(await readFile('supabase/public-config.json','utf8'));
 const publicConfig={url:config.url||config.projectUrl,key:config.publishableKey||config.key};
 if(!publicConfig.url?.startsWith('https://')||!publicConfig.key?.startsWith('sb_publishable_'))throw Error('Проверьте public-config.json');
 await mkdir('shared-dist',{recursive:true});
-const result=await build({entryPoints:['src/App.jsx'],bundle:true,minify:true,format:'iife',write:false,define:{'process.env.NODE_ENV':'"production"','ORBITA_SUPABASE':JSON.stringify(publicConfig)}});
+const result=await build({entryPoints:['src/App.jsx'],bundle:true,minify:true,format:'iife',write:false,define:{'process.env.NODE_ENV':'"production"','ORBITA_DEMO':'false','ORBITA_SUPABASE':JSON.stringify(publicConfig)}});
 const css=(await readFile('src/styles.css','utf8')).replace(/\r\n/g,'\n');
 const js=result.outputFiles[0].text.replace(/<\/script/gi,'<\\/script');
 await writeFile('shared-dist/index.html',`<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Орбита · Планета успеха</title><style>${css}</style></head><body><div id="orbita-root"></div><script>${js}</script></body></html>`);
