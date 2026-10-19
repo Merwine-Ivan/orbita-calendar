@@ -49,7 +49,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
    if(!Number.isFinite(claims.iat)||claims.iat<=p.invalid_before)fail('Доступ обновлён администратором. Войдите заново.',401);
    const route=new URL(request.url).pathname.split('/calendar-api/')[1]||'';
    const isAdmin=()=>{if(!isManager(p.role))fail('Доступ только для администратора',403);};
-   let b={};if(!['GET','HEAD'].includes(request.method)){const raw=await request.text();if(new TextEncoder().encode(raw).length>150000)fail('Запрос слишком большой',413);try{b=JSON.parse(raw||'{}');}catch{fail('Некорректный JSON');}}
+   let b={};if(!['GET','HEAD'].includes(request.method)){const raw=await request.text();if(new TextEncoder().encode(raw).length>150000)fail('Запрос слишком большой',413);try{b=JSON.parse(raw||'{}');}catch{fail('Некорректный JSON');}if(!b||typeof b!=='object'||Array.isArray(b))fail('Ожидается объект JSON');}
    if(route==='session'&&request.method==='GET')return json({demo:false,vkOnly:false,user:{...publicProfile(p),...passwordStatus(p)}});
    if(route==='password'&&request.method==='POST'){
     passwordCheck(b.password);await backend('/auth/v1/user',{method:'PUT',token,body:{password:b.password}});
@@ -58,9 +58,15 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
    if(route==='activity'&&request.method==='POST'){
     if(!['login','logout'].includes(b.event))fail('Неизвестное событие');
     if(b.event==='login')await backend(query('profiles',`id=eq.${p.id}`),{method:'PATCH',body:{last_seen_at:new Date(now()).toISOString()}});
+    if(b.event==='logout')await backend(query('profiles',`id=eq.${p.id}`),{method:'PATCH',body:{last_seen_at:null,invalid_before:Math.floor(now()/1000)}});
     await audit(p,b.event,p.id);return json({ok:true});
    }
    if(p.must_change)fail('Сначала замените временный пароль',403);
+   if(route==='backup'&&request.method==='GET'){
+    if(p.role!=='owner')fail('Резервная копия доступна только главному admin',403);
+    const snapshot=await backend('/rest/v1/rpc/orbita_journal_backup',{method:'POST',body:{}});
+    await audit(p,'backup:journal','journal');return json(snapshot);
+   }
    if(route==='presence'&&request.method==='POST'){
     await backend(query('profiles',`id=eq.${p.id}`),{method:'PATCH',body:{last_seen_at:new Date(now()).toISOString()}});return json({ok:true});
    }
@@ -89,6 +95,9 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
      const previous=await one('groups',id);
      if(typeof b.name!=='string'||!b.name.trim()||b.name.length>120||typeof b.subject!=='string'||!b.subject.trim()||b.subject.trim().length>80||/[\x00-\x1f\x7f]/.test(b.subject)||(b.teacherId!=null&&!uuid(b.teacherId)))fail('Проверьте название, предмет и преподавателя');
      const normalizedSubject=b.subject.trim();
+     if(!Array.isArray(b.students)||b.students.length>100||!Array.isArray(b.schedule)||b.schedule.length>20)fail('Проверьте учеников и расписание');
+     if(b.students.some(s=>!s||typeof s!=='object')||b.schedule.some(s=>!s||typeof s!=='object'))fail('Проверьте учеников и расписание');
+     for(const slot of b.schedule)if(slot.teacherId){if(!uuid(slot.teacherId))fail('Некорректный преподаватель в расписании');if(isManager(p.role)){const t=await one('profiles',slot.teacherId);if(!t||t.disabled)fail('Преподаватель расписания недоступен');}}
      if(!isManager(p.role)){
       if(p.role!=='teacher'||b.teacherId!==p.id)fail('Преподаватель может управлять только своими группами',403);
       if(previous){
@@ -104,9 +113,9 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
      const ids=new Set();for(const s of b.students){if(!uuid(s.id)||ids.has(s.id)||typeof s.name!=='string'||!s.name.trim()||s.name.length>120)fail('Проверьте учеников');ids.add(s.id);}
      const slots=new Set();for(const s of b.schedule){if(!Number.isInteger(s.day)||s.day<0||s.day>6||![s.start,s.end].every(t=>typeof t==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(t))||duration(s.start,s.end)<=0)fail('Проверьте расписание');if([s.effectiveFrom,s.effectiveTo].some(d=>d&&(!/^\d{4}-\d{2}-\d{2}$/.test(d)||dateKey(new Date(`${d}T12:00:00`))!==d))||(s.effectiveFrom&&s.effectiveTo&&s.effectiveFrom>s.effectiveTo))fail('Проверьте даты расписания');if(s.repeat!==undefined&&!['weekly','biweekly','once'].includes(s.repeat))fail('Неизвестная периодичность');if(['biweekly','once'].includes(s.repeat)&&!s.effectiveFrom)fail('Укажите дату начала повторения');if(s.repeat==='once'&&new Date(`${s.effectiveFrom}T12:00:00`).getDay()!==s.day)fail('Разовый урок должен совпадать с выбранной датой');const k=`${s.day}-${s.start}-${s.effectiveFrom||''}-${s.effectiveTo||''}`;if(slots.has(k))fail('Повтор времени в расписании');slots.add(k);}
      if(Boolean(previous?.payload.archived)!==Boolean(b.archived))event=b.archived?'archive:groups':'restore:groups';
-     await save(table,{...(previous?.payload||{}),id,name:b.name.trim(),subject:normalizedSubject,teacherId:b.teacherId||null,createdBy:previous?.payload.createdBy||(!isManager(p.role)?p.id:null),students:b.students.map(s=>({id:s.id,name:s.name.trim()})),schedule:b.schedule.map(s=>({day:s.day,start:s.start,end:s.end,...(s.id?{id:s.id}:{}),effectiveFrom:s.effectiveFrom||null,effectiveTo:s.effectiveTo||null,...(s.repeat?{repeat:s.repeat}:{}),active:s.active!==false,...(s.teacherId?{teacherId:s.teacherId}:{})})),archived:Boolean(b.archived),version:b.version},{teacher_id:b.teacherId});
+     await save(table,{...(previous?.payload||{}),id,name:b.name.trim(),subject:normalizedSubject,teacherId:b.teacherId||null,createdBy:previous?.payload.createdBy||(!isManager(p.role)?p.id:null),students:b.students.map(s=>({id:s.id,name:s.name.trim()})),schedule:b.schedule.map(s=>({day:s.day,start:s.start,end:s.end,...(s.id?{id:s.id}:{}),effectiveFrom:s.effectiveFrom||null,effectiveTo:s.effectiveTo||null,...(s.repeat?{repeat:s.repeat}:{}),active:s.active!==false,...(s.teacherId?{teacherId:s.teacherId}:{})})),archived:Boolean(b.archived),version:b.version},{teacher_id:b.teacherId||null});
     }else{
-     validateLesson(b);if(!uuid(b.groupId))fail('Некорректная группа');const g=await one('groups',b.groupId);if(!g)fail('Группа не найдена');
+     try{validateLesson(b);}catch(e){fail(e.message);}if(!uuid(b.groupId))fail('Некорректная группа');const g=await one('groups',b.groupId);if(!g)fail('Группа не найдена');
      const old=await one('lessons',id);
      if(b.deleted!==undefined&&typeof b.deleted!=='boolean')fail('Некорректное состояние удаления');
      const changingDeletion=Boolean(b.deleted)!==Boolean(old?.payload.deleted);
@@ -119,8 +128,8 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
      if(Boolean(b.deleted)!==Boolean(old?.payload.deleted))event=b.deleted?'delete:lessons':'restore:lessons';
      const permitted=(group,lesson)=>canTeachGroup(p,group&&{teacherId:lesson?.teacherId??group.teacher_id,subject:group.payload.subject,createdBy:group.payload.createdBy});
      if(!permitted(g,b)||(old&&!permitted(await one('groups',old.group_id),old.payload)))fail('Редактировать можно только свои группы по разрешённым предметам',403);
-     if(!isManager(p.role)&&(b.teacherId??null)!==(old?.payload.teacherId??null))fail('Назначать преподавателя может только администратор',403);
-     if(b.teacherId&&!uuid(b.teacherId))fail('Некорректный преподаватель');
+     if(!isManager(p.role)&&(b.teacherId??null)!==(old?.payload.teacherId??null)&&!( !old&&b.teacherId===p.id&&g.teacher_id===p.id))fail('Назначать преподавателя может только администратор',403);
+     if(b.teacherId&&(!old||b.teacherId!==old.payload.teacherId||b.groupId!==old.group_id)){if(!uuid(b.teacherId))fail('Некорректный преподаватель');const t=await one('profiles',b.teacherId);if(!t||t.disabled)fail('Преподаватель недоступен');if(!isManager(t.role)&&subjects.includes(g.payload.subject)&&!t.subjects?.includes(g.payload.subject)&&g.payload.createdBy!==t.id)fail('Сначала разрешите преподавателю этот предмет в его профиле');}
      if(g.payload.archived&&(!old||old.group_id!==g.id))fail('Группа в архиве');
      if(!b.attendance||typeof b.attendance!=='object'||Array.isArray(b.attendance))fail('Некорректная посещаемость');
      for(const [sid,mark] of Object.entries(b.attendance))if(!['present','absent','excused'].includes(mark)||(!g.payload.students.some(s=>s.id===sid)&&old?.payload.attendance?.[sid]!==mark))fail('Некорректная отметка');

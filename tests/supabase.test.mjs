@@ -13,6 +13,7 @@ function fixture({passwordError,defaultTemporaryPassword,profileUpdateError=fals
   const u=new URL(url);calls.push({path:u.pathname,init});const respond=(data,status=200)=>new Response(JSON.stringify(data),{status});
   if(u.pathname==='/auth/v1/user'){const t=init.headers.Authorization.slice(7);if(![admin,teacher,other].some(id=>token(id)===t))return respond({},401);if(init.method==='PUT'&&passwordError)return respond({error_code:passwordError},422);return respond({id:JSON.parse(atob(t.split('.')[1])).sub});}
   if(u.pathname.startsWith('/auth/v1/admin/'))return respond({id:other});
+  if(u.pathname==='/rest/v1/rpc/orbita_journal_backup')return respond({format:'orbita-journal',formatVersion:1,createdAt:'2026-10-19T00:00:00Z',groups:tables.groups.map(g=>({...g.payload,version:g.version})),lessons:tables.lessons.map(l=>({...l.payload,version:l.version})),users:tables.profiles.map(({id,name,login,role,subjects,disabled})=>({id,name,login,role,subjects,disabled}))});
   const table=u.pathname.split('orbita_')[1];if(!tables[table])throw Error('Unexpected request '+url);
   const rows=tables[table];const filter=row=>[...u.searchParams].every(([key,v])=>!v.startsWith('eq.')||String(row[key])===v.slice(3));
   const data=init.body?JSON.parse(init.body):undefined;
@@ -166,9 +167,52 @@ test('login and logout events are attributed to the authenticated account even b
  const {req,tables}=fixture();tables.profiles[1].must_change=true;
  assert.equal((await req('activity',teacher,'POST',{event:'login',actor:admin})).status,200);
  assert.equal(tables.audit[0].actor,teacher);assert.equal(tables.audit[0].action,'login');
- assert.equal((await req('activity',teacher,'POST',{event:'logout'})).status,200);
  assert.equal((await req('activity',teacher,'POST',{event:'anything'})).status,400);
  assert.equal((await req('audit',teacher)).status,403);
+ assert.equal((await req('activity',teacher,'POST',{event:'logout'})).status,200);
+ assert.equal((await req('audit',teacher)).status,401);
+});
+
+test('full backup is owner-only, includes archives and attendance, and never includes credential fields',async()=>{
+ const {req,tables,calls}=fixture();
+ assert.equal((await req('backup',teacher)).status,403);
+ assert.equal((await req('backup',admin)).status,403);
+ assert.equal(calls.filter(c=>c.path.includes('/rpc/')).length,0);
+ tables.profiles[0].role='owner';tables.profiles[0].refresh_token='PRIVATE_SESSION';
+ tables.groups[0].payload.archived=true;tables.groups[0].payload.students=[{id:teacher,name:'Fictional pupil'}];
+ tables.lessons.push({id:lid,version:9,payload:{id:lid,deleted:true,attendance:{[teacher]:'present'},report:'Keep report'}});
+ const response=await req('backup',admin);assert.equal(response.status,200);
+ const copy=await response.json();assert.equal(copy.formatVersion,1);
+ assert.equal(copy.groups[0].archived,true);assert.equal(copy.lessons[0].deleted,true);
+ assert.equal(copy.lessons[0].report,'Keep report');assert.equal(copy.lessons[0].attendance[teacher],'present');
+ assert.equal(copy.lessons[0].version,9);assert.ok(!JSON.stringify(copy).includes('PRIVATE_SESSION'));
+ assert.ok(tables.audit.some(a=>a.action==='backup:journal'&&a.actor===admin));
+ tables.profiles[0].must_change=true;assert.equal((await req('backup',admin)).status,403);
+});
+
+test('invalid lesson fields and malformed JSON objects return actionable 400 errors without writes',async()=>{
+ const {req,tables}=fixture();
+ const lesson={id:lid,groupId:gid,date:'2026-02-30',start:'09:00',end:'10:00',status:'planned',report:'',attendance:{},version:0};
+ const response=await req(`lessons/${lid}`,teacher,'PUT',lesson);
+ assert.equal(response.status,400);assert.match((await response.json()).error,/дат/);
+ for(const body of [null,[],42,'text'])assert.equal((await req(`groups/${gid}`,teacher,'PUT',body)).status,400);
+ for(const schedule of [{},[null]])assert.equal((await req(`groups/${gid}`,teacher,'PUT',{...tables.groups[0].payload,version:1,schedule,students:[]})).status,400);
+ assert.equal(tables.lessons.length,0);assert.equal(tables.audit.length,0);
+});
+
+test('logout immediately removes online status and revokes the caller old access token',async()=>{
+ const {req,tables}=fixture();
+ await req('presence',teacher,'POST',{});
+ assert.equal((await req('activity',teacher,'POST',{event:'logout'})).status,200);
+ assert.equal(tables.profiles[1].last_seen_at,null);
+ assert.equal((await req('bootstrap',teacher)).status,401);
+});
+
+test('admin cannot assign a lesson to a missing, disabled or unauthorized teacher',async()=>{
+ const {req,tables}=fixture();const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',status:'planned',report:'',attendance:{},version:0,teacherId:other};
+ tables.profiles[2].disabled=true;assert.equal((await req(`lessons/${lid}`,admin,'PUT',lesson)).status,400);
+ tables.profiles[2].disabled=false;tables.profiles[2].subjects=[];assert.equal((await req(`lessons/${lid}`,admin,'PUT',lesson)).status,400);
+ tables.profiles[2].subjects=['Английский'];assert.equal((await req(`lessons/${lid}`,admin,'PUT',lesson)).status,200);
 });
 
 test('default password reset is scoped, revokes sessions and never returns the secret',async()=>{
@@ -331,4 +375,20 @@ test('new subjects must have a non-empty short name, administrators retain full 
  assert.equal((await req(`groups/${ownId}`,admin,'PUT',{...saved.payload,version:1,archived:true})).status,200);
  assert.equal(saved.payload.archived,true);
  assert.equal((await req(`groups/${ownId}`,teacher,'PUT',{...saved.payload,version:2,archived:false})).status,403);
+});
+
+
+test('a teacher can generate a slot explicitly assigned to self, without permission to reassign it',async()=>{
+ const {req,tables}=fixture();
+ const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',status:'planned',report:'',attendance:{},version:0,teacherId:teacher};
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',lesson)).status,200);
+ assert.equal(tables.lessons[0].payload.teacherId,teacher);
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',{...lesson,version:1,teacherId:other})).status,403);
+});
+
+test('omitted group teacher normalizes both the record and public payload to unassigned',async()=>{
+ const {req,tables}=fixture();
+ const {teacherId,...group}=tables.groups[0].payload;
+ assert.equal((await req(`groups/${gid}`,admin,'PUT',{...group,version:1})).status,200);
+ assert.equal(tables.groups[0].teacher_id,null);assert.equal(tables.groups[0].payload.teacherId,null);
 });
