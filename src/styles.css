@@ -68,6 +68,10 @@
 }
 @media(max-width:370px){main{padding-left:10px;padding-right:10px}.mobile-week-picker>button{min-width:24px}.mobile-week-days small{font-size:8px}.mobile-week-days button{padding-left:0;padding-right:0}.mobile-bottom-nav button span{font-size:9px}}
 
+.sync-warning{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;background:#342d1c;border:1px solid #746039;color:#ecd8ae;padding:14px 16px;border-radius:10px;margin:12px 0;font-size:12px;line-height:1.6}
+.backup-panel{max-width:850px}.backup-panel p{line-height:1.8}.backup-success{padding:14px;border:1px solid #507c65;background:#203c30;border-radius:10px;color:#b4ebca;font-size:13px}
+.sidebar nav{min-height:0;overflow-y:auto;flex-shrink:1}.sidebar .side-note{flex-shrink:1;min-height:0;overflow:hidden}.sidebar footer{flex-shrink:0}
+@media(max-height:820px) and (min-width:741px){.sidebar .side-note{display:none}.sidebar .workspace{margin-top:18px}.sidebar .nav-caption{margin-top:18px}.sidebar nav button{padding-top:10px;padding-bottom:10px}}
 /* Compact calendar agenda cards, fluid from narrow phones to widescreen desktop.
    A single button covers the whole row: no tiny nested edit controls. */
 .lesson-card {

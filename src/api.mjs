@@ -1,5 +1,5 @@
 import {createSupabaseApi} from './supabase-api.mjs';
-const shared = typeof ORBITA_SUPABASE!=='undefined' ? createSupabaseApi({...ORBITA_SUPABASE,onExpired:()=>window.dispatchEvent(new Event('orbita-session-expired'))}) : null;
+const shared = typeof ORBITA_SUPABASE!=='undefined' ? createSupabaseApi({...ORBITA_SUPABASE,onExpired:detail=>window.dispatchEvent(new CustomEvent('orbita-session-expired',{detail}))}) : null;
 let sessionToken='';
 export function setSessionToken(token){sessionToken=token;}
 export async function request(path,method='GET',body) {

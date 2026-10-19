@@ -1,0 +1,7 @@
+node_modules/
+shared-dist/
+data/
+*.log
+.env
+.env.*
+!.env.example
