@@ -1,6 +1,6 @@
 import React from 'react';
 export function NavIcon({name,size=22}){
- const paths={
+ const paths={students:<><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a7 7 0 0 1 14 0v2M17 5h5m-5 5h5m-3 5h3"/></>,
  calendar:<><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 14h2M14 14h2M8 18h2"/></>,
  groups:<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></>,
  stats:<><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 16v-4m4 4V8m4 8v-6"/></>,

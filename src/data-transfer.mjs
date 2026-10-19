@@ -1,3 +1,4 @@
+import {assertSharedProfiles,profileKeys} from './student-directory.mjs';
 import {parseGroupImport} from './group-import.mjs';
 import {studentRecord} from './student.mjs';
 import {duration,dateKey,validateLesson} from './model.mjs';
@@ -6,7 +7,7 @@ const plain=v=>v&&typeof v==='object'&&!Array.isArray(v);
 const norm=v=>v.trim().toLocaleLowerCase('ru-RU');
 export function stable(v){return JSON.stringify(v,function(k,x){return plain(x)?Object.fromEntries(Object.keys(x).sort().map(key=>[key,x[key]])):x;});}
 export async function digest(v){return [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(stable(v))))].map(x=>x.toString(16).padStart(2,'0')).join('');}
-async function idFor(seed){const x=await digest(seed);return `${x.slice(0,8)}-${x.slice(8,12)}-4${x.slice(13,16)}-a${x.slice(17,20)}-${x.slice(20,32)}`;}
+export async function idFor(seed){const x=await digest(seed);return `${x.slice(0,8)}-${x.slice(8,12)}-4${x.slice(13,16)}-a${x.slice(17,20)}-${x.slice(20,32)}`;}
 function equivalent(a,b){const clean=x=>{const {version,...rest}=x;return rest;};return stable(clean(a))===stable(clean(b));}
 export function validateGroup(g,allowHistorical=false){
  if(!plain(g)||!uuid(g.id)||typeof g.name!=='string'||!g.name.trim()||g.name.length>120||typeof g.subject!=='string'||!g.subject.trim()||g.subject.length>80||/[\x00-\x1f\x7f]/.test(g.subject)||g.teacherId!=null&&!uuid(g.teacherId))throw Error('Некорректная группа');
@@ -60,7 +61,7 @@ export async function buildTransfer({kind,source,existing,users,overwrite=false}
   const mapTeacher=id=>{if(id==null)return null;const direct=users.find(u=>u.id===id);if(direct)return direct.id;const original=copy.users.find(u=>u.id===id);const mapped=original&&users.filter(u=>norm(u.login)===norm(original.login));if(mapped?.length===1)return mapped[0].id;throw Error('В копии есть преподаватель без аккаунта в этом журнале. Сначала выдайте ему доступ с прежним логином.');};
   for(const raw of copy.groups){validateGroup(raw,true);if(groupIDs.has(raw.id))throw Error('Повтор ID группы в копии');groupIDs.add(raw.id);const old=groups.find(g=>g.id===raw.id);
    let value={...(old||{}),...structuredClone(raw),teacherId:mapTeacher(raw.teacherId),createdBy:raw.createdBy?mapTeacher(raw.createdBy):null,schedule:raw.schedule.map(s=>({...s,...(s.teacherId?{teacherId:mapTeacher(s.teacherId)}:{})}))};
-   if(old){if(overwrite){value.students=[...old.students.filter(s=>!raw.students.some(x=>x.id===s.id)),...raw.students.map(s=>({...old.students.find(x=>x.id===s.id),...s}))];}
+   if(old){if(overwrite){value.students=[...old.students.filter(s=>!raw.students.some(x=>x.id===s.id)),...raw.students.map(s=>{const prior={...old.students.find(x=>x.id===s.id)};for(const k of [...profileKeys,'personId'])delete prior[k];return {...prior,...s,personId:s.personId||null};})];}
     else{value={...old,students:[...old.students,...raw.students.filter(s=>!old.students.some(x=>x.id===s.id))]};}summary.newStudents+=value.students.length-old.students.length;
    }else summary.newStudents+=value.students.length;
    validateGroup(value,true);put('groups',value);
@@ -71,6 +72,7 @@ export async function buildTransfer({kind,source,existing,users,overwrite=false}
   }
   warnings.push('Учётные записи и пароли не восстанавливаются. Записи, которых нет в файле, сохраняются. Лишние ученики в действующих группах сохраняются.');
  }
+ assertSharedProfiles(groups);
  if(changes.groups.length>1000||changes.lessons.length>5000)throw Error('Слишком много записей за одну операцию');
  const checks={groups:existing.groups.map(g=>({id:g.id,version:g.version})),lessons:existing.lessons.map(l=>({id:l.id,version:l.version}))};
  return {changes,checks,summary,details,warnings,digest:await digest({kind,source,overwrite,changes,checks})};

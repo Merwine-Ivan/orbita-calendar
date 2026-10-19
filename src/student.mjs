@@ -11,4 +11,4 @@ export function studentRecord(s){
  if(s.gender){if(!['female','male','unspecified'].includes(s.gender))throw Error('Проверьте пол ученика');out.gender=s.gender;}
  return out;
 }
-export function visibleStudent(s,privateAccess){if(privateAccess)return s;return {id:s.id,name:s.name,...(s.code?{code:s.code}:{})};}
+export function visibleStudent(s,privateAccess){if(privateAccess)return s;return {id:s.id,name:s.name,...(s.personId?{personId:s.personId}:{}),...(s.code?{code:s.code}:{})};}
