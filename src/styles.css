@@ -164,3 +164,11 @@
   .lesson-card-subject{font-size:11px}
   .lesson-card .lesson-card-status{font-size:10px}
 }
+/* Short, quiet feedback; never animate the perpetual polling refresh. */
+@keyframes orbita-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.transfer-panel section,.backup-success,dialog[open]{animation:orbita-enter .22s ease-out both}
+.metric,.student-card,button{transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease}
+.student-cards{display:grid;gap:10px}.student-card{border:1px solid var(--border,#303947);border-radius:12px;background:#131b26}.student-card summary{display:flex;align-items:center;gap:12px;padding:14px;cursor:pointer;list-style:none}.student-card summary>span:last-child{flex:1;min-width:0;overflow-wrap:anywhere}.student-card summary:after{content:'＋';color:#96d7be}.student-card[open] summary:after{content:'−'}.student-card small{display:block;color:#91a0b5;margin-top:5px;font-size:12px}.student-card-body{padding:0 14px 14px;display:grid;gap:12px}.student-card-body label{margin:0}.student-card-body .form-grid{gap:12px}
+.transfer-panel fieldset{border:0;padding:0;min-width:0;display:grid;gap:14px}.transfer-panel textarea{width:100%;box-sizing:border-box}.transfer-panel input[type=file]{max-width:100%;padding:10px;box-sizing:border-box}.transfer-list{max-height:300px;overflow:auto;margin:16px 0}.transfer-list>div{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #293342;overflow-wrap:anywhere}.transfer-create{color:#95daba}.transfer-update{color:#ebc182}.check-line{display:flex!important;align-items:flex-start;gap:10px;margin:14px 0!important}.check-line input{width:18px;flex:none;margin:2px 0}.restore-box{margin:24px 0;border-top:1px solid #303947;padding:18px 0}.restore-box>summary{cursor:pointer;font-weight:600;padding:8px 0}.transfer-panel button{white-space:normal}.student-card:focus-within{border-color:#8acbb1}
+@media(max-width:600px){.student-card-body .form-grid{grid-template-columns:1fr}.transfer-list>div{align-items:flex-start;flex-direction:column}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

@@ -1,18 +1,11 @@
-import React,{useState} from 'react';
+import React,{useEffect,useState} from 'react';
 import {request} from './api.mjs';
 import {activityTime} from './Presence.jsx';
-
-export function JournalBackup(){
- const [busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(null);
- async function save(){
-  setBusy(true);setError('');
-  try{
-   const copy=await request('backup');
-   if(copy.format!=='orbita-journal'||copy.formatVersion!==1||!Array.isArray(copy.groups)||!Array.isArray(copy.lessons)||!Array.isArray(copy.users))throw Error('Не удалось проверить резервную копию. Повторите скачивание.');
-   const blob=new Blob([JSON.stringify(copy,null,2)],{type:'application/json;charset=utf-8'}),url=URL.createObjectURL(blob);
-   const a=document.createElement('a');a.href=url;a.download=`orbita-backup-${copy.createdAt.replace(/[:.]/g,'-')}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-   setSaved({at:copy.createdAt,groups:copy.groups.length,lessons:copy.lessons.length});
-  }catch(e){setError(e.message);}finally{setBusy(false);}
- }
- return <section className="panel backup-panel"><div className="panel-heading"><div><span className="eyebrow">ДАННЫЕ ЦЕНТРА</span><h2>Сохранить всю историю</h2></div></div><div className="modal-body"><p>Одна копия содержит все месяцы: группы, учеников, расписание, занятия, посещаемость и отчёты. Архив и корзина тоже сохраняются.</p><p className="subtle">Имена и роли сотрудников включены для связи с занятиями. Пароли и сеансы входа в файл не попадают. Скачивание доступно только главному admin и отмечается в журнале действий.</p><button className="primary" disabled={busy} onClick={save}>{busy?'Готовим копию…':'↓ Скачать полную копию JSON'}</button>{error&&<p className="error" role="alert">{error}</p>}{saved&&<p className="backup-success" role="status">Копия подготовлена: {activityTime(saved.at)} · {saved.groups} групп · {saved.lessons} занятий. Проверьте файл в загрузках браузера.</p>}<p className="subtle">Храните файл в закрытой папке: он содержит данные учеников. Это копия данных журнала; для восстановления её нужно загрузить в базу с проверкой связей. Автоматическое восстановление через сайт пока не включено.</p></div></section>;
+import {TransferPanel,downloadJSON} from './TransferPanel.jsx';
+export function JournalBackup({onApplied}){
+ const [busy,setBusy]=useState(false),[error,setError]=useState(''),[saved,setSaved]=useState(null),[history,setHistory]=useState([]),[historyError,setHistoryError]=useState('');
+ async function loadHistory(){try{setHistory((await request('transfer/history')).entries);setHistoryError('');}catch(e){setHistoryError(e.message);}}
+ useEffect(()=>{loadHistory();},[]);
+ async function save(id){setBusy(true);setError('');try{const copy=await request(id?`transfer/backups/${id}`:'backup');downloadJSON(copy);setSaved({at:copy.createdAt,groups:copy.groups.length,lessons:copy.lessons.length});}catch(e){setError(e.message);}finally{setBusy(false);}}
+ return <section className="panel backup-panel"><div className="panel-heading"><div><span className="eyebrow">ДАННЫЕ ЦЕНТРА</span><h2>Копии и восстановление</h2></div></div><div className="modal-body"><p>Полная история: группы, ученики и контакты, расписание, занятия, посещаемость, отчёты, архив и корзина. Пароли и сеансы входа в файл не попадают.</p><button className="primary" disabled={busy} onClick={()=>save()}>{busy?'Готовим копию…':'↓ Скачать полную копию JSON'}</button>{error&&<p className="error" role="alert">{error}</p>}{saved&&<p className="backup-success" role="status">Копия подготовлена: {activityTime(saved.at)} · {saved.groups} групп · {saved.lessons} занятий. Проверьте файл в загрузках.</p>}<p className="subtle">Храните файл в закрытой папке: он содержит данные учеников. Учётные записи создаются отдельно; при восстановлении связи преподавателей проверяются по ID и логину.</p><details className="restore-box"><summary>Восстановить из JSON</summary><TransferPanel kind="restore" onApplied={async()=>{await loadHistory();await onApplied?.();}}/></details><div className="panel-heading"><h3>Автоматические копии перед переносом</h3><button disabled={busy} onClick={loadHistory}>Обновить историю</button></div>{historyError&&<p className="error" role="alert">{historyError}</p>}{!history.length&&!historyError&&<p className="subtle">Появятся после первого импорта или восстановления. Последние 20 операций.</p>}<div className="transfer-list">{history.map(h=><div key={h.id}><span>{activityTime(h.at)} · {h.source==='orbita-csv'?'Импорт CSV':'Восстановление'}</span><button disabled={busy} onClick={()=>save(h.id)}>↓ Копия до изменений</button></div>)}</div></div></section>;
 }

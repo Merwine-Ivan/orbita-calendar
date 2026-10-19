@@ -14,6 +14,7 @@ function fixture({passwordError,defaultTemporaryPassword,profileUpdateError=fals
   if(u.pathname==='/auth/v1/user'){const t=init.headers.Authorization.slice(7);if(![admin,teacher,other].some(id=>token(id)===t))return respond({},401);if(init.method==='PUT'&&passwordError)return respond({error_code:passwordError},422);return respond({id:JSON.parse(atob(t.split('.')[1])).sub});}
   if(u.pathname.startsWith('/auth/v1/admin/'))return respond({id:other});
   if(u.pathname==='/rest/v1/rpc/orbita_journal_backup')return respond({format:'orbita-journal',formatVersion:1,createdAt:'2026-10-19T00:00:00Z',groups:tables.groups.map(g=>({...g.payload,version:g.version})),lessons:tables.lessons.map(l=>({...l.payload,version:l.version})),users:tables.profiles.map(({id,name,login,role,subjects,disabled})=>({id,name,login,role,subjects,disabled}))});
+  if(u.pathname==='/rest/v1/rpc/orbita_apply_transfer')return respond({...JSON.parse(init.body).p_summary,backupId:'50000000-0000-4000-8000-000000000001'});
   const table=u.pathname.split('orbita_')[1];if(!tables[table])throw Error('Unexpected request '+url);
   const rows=tables[table];const filter=row=>[...u.searchParams].every(([key,v])=>!v.startsWith('eq.')||String(row[key])===v.slice(3));
   const data=init.body?JSON.parse(init.body):undefined;
@@ -391,4 +392,26 @@ test('omitted group teacher normalizes both the record and public payload to una
  const {teacherId,...group}=tables.groups[0].payload;
  assert.equal((await req(`groups/${gid}`,admin,'PUT',{...group,version:1})).status,200);
  assert.equal(tables.groups[0].teacher_id,null);assert.equal(tables.groups[0].payload.teacherId,null);
+});
+
+test('transfer preview is read-only, requires manager access and commit rejects stale preview',async()=>{
+ const {req,tables,calls}=fixture();tables.imports=[];
+ const source='group;subject;teacher_login;student_code;student_name;day;start;end\nНовая;Английский;user1;S01;Вымышленный ученик;1;09:00;10:00';
+ assert.equal((await req('transfer/csv/preview',teacher,'POST',{source})).status,403);
+ assert.equal((await req('transfer/restore/preview',admin,'POST',{source:'{}'})).status,403);
+ const before=structuredClone(tables);const preview=await req('transfer/csv/preview',admin,'POST',{source});assert.equal(preview.status,200);const plan=await preview.json();assert.equal(plan.summary.newGroups,1);assert.deepEqual(tables,before);
+ const body={source,digest:plan.digest,requestId:'50000000-0000-4000-8000-000000000001'};
+ tables.groups[0].version++;
+ assert.equal((await req('transfer/csv/commit',admin,'POST',body)).status,409);assert.ok(!calls.some(c=>c.path.endsWith('/orbita_apply_transfer')));
+ tables.groups[0].version--;
+ assert.equal((await req('transfer/csv/commit',admin,'POST',body)).status,200);const call=calls.find(c=>c.path.endsWith('/orbita_apply_transfer'));const rpc=JSON.parse(call.init.body);assert.equal(rpc.p_actor,admin);assert.equal(rpc.p_checks.groups[0].version,1);assert.equal(rpc.p_changes.groups.length,1);
+});
+
+test('contact fields survive normal group edits and are hidden from unrelated teachers',async()=>{
+ const {req,tables}=fixture();const student={id:'60000000-0000-4000-8000-000000000001',name:'Ученик',phone:'+79990000000',guardianPhone:'+79990000001',guardianName:'Родитель',age:10,gender:'male',sourceStudentId:'legacy'};tables.groups[0].payload.students=[student];
+ const unrelated=await(await req('bootstrap',other)).json();assert.deepEqual(unrelated.groups[0].students,[{id:student.id,name:student.name}]);
+ assert.equal((await(await req('bootstrap',teacher)).json()).groups[0].students[0].phone,student.phone);
+ let group={...tables.groups[0].payload,version:1};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,200);assert.equal(tables.groups[0].payload.students[0].sourceStudentId,'legacy');
+ group={...tables.groups[0].payload,version:2,students:[{...student,phone:'',age:''}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,200);assert.equal(tables.groups[0].payload.students[0].phone,undefined);assert.equal(tables.groups[0].payload.students[0].age,undefined);assert.equal(tables.groups[0].payload.students[0].guardianPhone,student.guardianPhone);
+ group={...group,version:3,students:[{...student,age:999}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,400);
 });
