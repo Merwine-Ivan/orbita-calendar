@@ -23,7 +23,7 @@ test('dated CSV imports reports and student attendance with stable links',async(
 });
 test('safe restore keeps newer reports, contacts, extra pupils and extra records',async()=>{
  const e=existing(),old={...group,students:[{id:sid,name:'Старое имя'}]},oldLesson={...lesson,report:'Старый отчёт',status:'planned',attendance:{}};const p=await buildTransfer({kind:'restore',source:copy([old],[oldLesson]),existing:e,users:[teacher]});assert.equal(p.changes.groups.length,0);assert.equal(p.changes.lessons.length,0);assert.equal(e.lessons[0].report,'Новый отчёт');
- const replace=await buildTransfer({kind:'restore',source:copy([old],[oldLesson]),existing:e,users:[teacher],overwrite:true});assert.equal(replace.changes.lessons[0].expectedVersion,4);assert.equal(replace.changes.lessons[0].payload.report,'Старый отчёт');assert.equal(replace.changes.groups[0].payload.students[0].guardianPhone,group.students[0].guardianPhone);
+ const replace=await buildTransfer({kind:'restore',source:copy([old],[oldLesson]),existing:e,users:[teacher],overwrite:true});assert.equal(replace.changes.lessons[0].expectedVersion,4);assert.equal(replace.changes.lessons[0].payload.report,'Старый отчёт');assert.equal(replace.changes.groups[0].payload.students[0].guardianPhone,undefined);
 });
 test('restore missing historical pupils by ID and retain unrelated live pupils',async()=>{
  const e=existing();e.groups[0].students=[];const p=await buildTransfer({kind:'restore',source:copy(),existing:e,users:[teacher]});assert.equal(p.summary.newStudents,1);assert.equal(p.changes.groups[0].payload.students[0].id,sid);

@@ -10,6 +10,21 @@ function validateLesson(l) {
   if (!["planned", "done", "cancelled"].includes(l.status)) throw Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0441\u0442\u0430\u0442\u0443\u0441");
   if (typeof l.report !== "string" || l.report.length > 1e4) throw Error("\u041E\u0442\u0447\u0451\u0442 \u0434\u043E\u043B\u0436\u0435\u043D \u0431\u044B\u0442\u044C \u043A\u043E\u0440\u043E\u0447\u0435 10 000 \u0441\u0438\u043C\u0432\u043E\u043B\u043E\u0432");
 }
+function recurrence(groups, year, month, existing) {
+  const dayMs = 864e5;
+  const utcDate = (iso) => Date.parse(`${iso}T00:00:00Z`);
+  const out = [];
+  for (let day = 1; day <= new Date(year, month + 1, 0).getDate(); day++) {
+    const d = new Date(year, month, day), date = dateKey(d);
+    for (const g of groups.filter((g2) => !g2.archived)) for (const s of g.schedule || []) if (s.active !== false && s.day === d.getDay() && (!s.effectiveFrom || date >= s.effectiveFrom) && (!s.effectiveTo || date <= s.effectiveTo) && (s.repeat !== "once" || date === s.effectiveFrom) && (s.repeat !== "biweekly" || s.effectiveFrom && (() => {
+      const start = /* @__PURE__ */ new Date(`${s.effectiveFrom}T12:00:00`);
+      const first = new Date(start);
+      first.setDate(start.getDate() + (s.day - start.getDay() + 7) % 7);
+      return (utcDate(date) - utcDate(dateKey(first))) % (14 * dayMs) === 0;
+    })()) && !existing.some((l) => l.groupId === g.id && l.date === date && l.start === s.start) && !out.some((l) => l.groupId === g.id && l.date === date && l.start === s.start)) out.push({ id: crypto.randomUUID(), groupId: g.id, date, start: s.start, end: s.end, ...s.teacherId ? { teacherId: s.teacherId } : {}, status: "planned", attendance: {}, report: "", version: 0 });
+  }
+  return out;
+}
 
 // src/roles.mjs
 var isManager = (role) => role === "owner" || role === "admin";
@@ -42,7 +57,80 @@ function studentRecord(s) {
 }
 function visibleStudent(s, privateAccess) {
   if (privateAccess) return s;
-  return { id: s.id, name: s.name, ...s.code ? { code: s.code } : {} };
+  return { id: s.id, name: s.name, ...s.personId ? { personId: s.personId } : {}, ...s.code ? { code: s.code } : {} };
+}
+
+// src/transfer-utils.mjs
+var uuid = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+var plain = (v) => v && typeof v === "object" && !Array.isArray(v);
+function stable(v) {
+  return JSON.stringify(v, function(k, x) {
+    return plain(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x;
+  });
+}
+async function digest(v) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(v))))].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// src/student-directory.mjs
+var profileKeys = ["name", "phone", "guardianName", "guardianPhone", "age", "gender"];
+var personId = (s) => s.personId || s.id;
+function profileOf(s) {
+  return Object.fromEntries(profileKeys.filter((k) => s[k] !== void 0 && s[k] !== "").map((k) => [k, s[k]]));
+}
+function directory(groups) {
+  const entries = /* @__PURE__ */ new Map();
+  for (const g of groups) for (const s of g.students) {
+    const id = personId(s);
+    let p = entries.get(id);
+    if (!p) {
+      p = { id, profile: profileOf(s), memberships: [] };
+      entries.set(id, p);
+    }
+    if (Object.keys(profileOf(s)).length > Object.keys(p.profile).length) p.profile = profileOf(s);
+    p.memberships.push({ groupId: g.id, groupName: g.name, archived: g.archived, memberId: s.id, code: s.code || "" });
+  }
+  return [...entries.values()].sort((a, b) => a.profile.name.localeCompare(b.profile.name, "ru"));
+}
+function sameProfile(a, b) {
+  return stable(profileOf(a)) === stable(profileOf(b));
+}
+function assertSharedProfiles(groups) {
+  const profiles = /* @__PURE__ */ new Map();
+  for (const g of groups) for (const s of g.students) {
+    if (s.personId && !uuid(s.personId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0441\u0432\u044F\u0437\u044C \u0435\u0434\u0438\u043D\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0438");
+    const id = personId(s);
+    if (profiles.has(id) && !sameProfile(profiles.get(id), s)) throw Error("\u0421\u0432\u044F\u0437\u0430\u043D\u043D\u044B\u0435 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0438 \u043E\u0442\u043B\u0438\u0447\u0430\u044E\u0442\u0441\u044F. \u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u0435\u0434\u0438\u043D\u0443\u044E \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0443 \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0423\u0447\u0435\u043D\u0438\u043A\u0438\xBB.");
+    profiles.set(id, s);
+  }
+}
+async function studentPlan({ groups, lessons, input }) {
+  if (!input || !["update", "link"].includes(input.action) || !uuid(input.personId)) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0435\u0434\u0438\u043D\u0443\u044E \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0443");
+  const people = directory(groups), target = people.find((p) => p.id === input.personId);
+  if (!target) throw Error("\u0423\u0447\u0435\u043D\u0438\u043A \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
+  let profile = profileOf(studentRecord({ id: target.id, ...input.action === "link" ? target.profile : input.profile }));
+  const ids = input.action === "link" ? input.sourceIds : [target.id];
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 50 || ids.some((id) => !uuid(id) || !people.some((p) => p.id === id)) || input.action === "link" && (!ids.includes(target.id) || new Set(ids).size < 2)) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043E\u0442 2 \u0434\u043E 50 \u043A\u0430\u0440\u0442\u043E\u0447\u0435\u043A \u0434\u043B\u044F \u043E\u0431\u044A\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u044F");
+  const chosen = new Set(ids);
+  for (const g of groups) if (g.students.filter((s) => chosen.has(personId(s))).length > 1) throw Error(`\u0412 \u0433\u0440\u0443\u043F\u043F\u0435 \xAB${g.name}\xBB \u0432\u044B\u0431\u0440\u0430\u043D\u044B \u0434\u0432\u0435 \u0440\u0430\u0437\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438 \u0443\u0447\u0435\u043D\u0438\u043A\u0430. \u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0441\u043E\u0441\u0442\u0430\u0432: \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u043F\u0438\u0441\u0438 \u043F\u043E\u0442\u0435\u0440\u044F\u0435\u0442 \u0441\u0432\u044F\u0437\u044C \u0441 \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u044C\u044E.`);
+  const changes = { groups: [], lessons: [] }, details = [];
+  for (const g of groups) {
+    if (!g.students.some((s) => chosen.has(personId(s)))) continue;
+    const students = g.students.map((s) => {
+      if (!chosen.has(personId(s))) return s;
+      const copy = { ...s, personId: target.id };
+      for (const k of profileKeys) delete copy[k];
+      return { ...copy, ...profile };
+    });
+    const payload = { ...g, students };
+    if (stable(payload) === stable(g)) continue;
+    changes.groups.push({ expectedVersion: g.version, payload });
+    details.push({ label: g.name, students: students.filter((s) => s.personId === target.id).map((s) => s.id) });
+  }
+  const checks = { groups: groups.map((g) => ({ id: g.id, version: g.version })), lessons: lessons.map((l) => ({ id: l.id, version: l.version })) };
+  const summary = { newGroups: 0, updatedGroups: changes.groups.length, newStudents: 0, newLessons: 0, updatedLessons: 0, skipped: 0 };
+  const warnings = input.action === "link" ? ["\u0411\u0443\u0434\u0443\u0442 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u044B \u0424\u0418\u041E \u0438 \u043A\u043E\u043D\u0442\u0430\u043A\u0442\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0439 \u043E\u0441\u043D\u043E\u0432\u043D\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0438. \u041A\u043E\u0434\u044B \u0432 \u0433\u0440\u0443\u043F\u043F\u0430\u0445, ID \u0437\u0430\u043F\u0438\u0441\u0435\u0439 \u0438 \u0432\u0441\u0435 \u043E\u0442\u043C\u0435\u0442\u043A\u0438 \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F. \u0418\u0441\u0445\u043E\u0434\u043D\u044B\u0435 \u0441\u0432\u0435\u0434\u0435\u043D\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0442\u0441\u044F \u0432 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438 \u043F\u0435\u0440\u0435\u0434 \u043E\u0431\u044A\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435\u043C."] : [];
+  return { changes, checks, summary, details, warnings, profile, digest: await digest({ input, changes, checks }) };
 }
 
 // src/group-import.mjs
@@ -158,19 +246,19 @@ function parseGroupImport(input) {
 }
 
 // src/data-transfer.mjs
-var uuid = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-var plain = (v) => v && typeof v === "object" && !Array.isArray(v);
+var uuid2 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+var plain2 = (v) => v && typeof v === "object" && !Array.isArray(v);
 var norm = (v) => v.trim().toLocaleLowerCase("ru-RU");
-function stable(v) {
+function stable2(v) {
   return JSON.stringify(v, function(k, x) {
-    return plain(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x;
+    return plain2(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x;
   });
 }
-async function digest(v) {
-  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(v))))].map((x) => x.toString(16).padStart(2, "0")).join("");
+async function digest2(v) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable2(v))))].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 async function idFor(seed) {
-  const x = await digest(seed);
+  const x = await digest2(seed);
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-4${x.slice(13, 16)}-a${x.slice(17, 20)}-${x.slice(20, 32)}`;
 }
 function equivalent(a, b) {
@@ -178,15 +266,15 @@ function equivalent(a, b) {
     const { version, ...rest } = x;
     return rest;
   };
-  return stable(clean(a)) === stable(clean(b));
+  return stable2(clean(a)) === stable2(clean(b));
 }
 function validateGroup(g, allowHistorical = false) {
-  if (!plain(g) || !uuid(g.id) || typeof g.name !== "string" || !g.name.trim() || g.name.length > 120 || typeof g.subject !== "string" || !g.subject.trim() || g.subject.length > 80 || /[\x00-\x1f\x7f]/.test(g.subject) || g.teacherId != null && !uuid(g.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
+  if (!plain2(g) || !uuid2(g.id) || typeof g.name !== "string" || !g.name.trim() || g.name.length > 120 || typeof g.subject !== "string" || !g.subject.trim() || g.subject.length > 80 || /[\x00-\x1f\x7f]/.test(g.subject) || g.teacherId != null && !uuid2(g.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
   if (!Array.isArray(g.students) || g.students.length > 100 || !Array.isArray(g.schedule) || g.schedule.length > 20) throw Error("\u041D\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 100 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 20 \u0432\u0440\u0435\u043C\u0451\u043D \u0432 \u0433\u0440\u0443\u043F\u043F\u0435");
   const ids = /* @__PURE__ */ new Set(), codes = /* @__PURE__ */ new Set();
   for (const s of g.students) {
     studentRecord(s);
-    if (!uuid(s.id) || ids.has(s.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0438\u043B\u0438 \u043D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0443\u0447\u0435\u043D\u0438\u043A\u0430");
+    if (!uuid2(s.id) || ids.has(s.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0438\u043B\u0438 \u043D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0443\u0447\u0435\u043D\u0438\u043A\u0430");
     ids.add(s.id);
     if (s.code) {
       if (codes.has(s.code)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u043A\u043E\u0434\u0430 \u0443\u0447\u0435\u043D\u0438\u043A\u0430 \u0432 \u0433\u0440\u0443\u043F\u043F\u0435");
@@ -195,7 +283,7 @@ function validateGroup(g, allowHistorical = false) {
   }
   const slots = /* @__PURE__ */ new Set();
   for (const s of g.schedule) {
-    if (!plain(s) || !Number.isInteger(s.day) || s.day < 0 || s.day > 6 || ![s.start, s.end].every((t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t)) || duration(s.start, s.end) <= 0 || s.teacherId != null && !uuid(s.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
+    if (!plain2(s) || !Number.isInteger(s.day) || s.day < 0 || s.day > 6 || ![s.start, s.end].every((t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t)) || duration(s.start, s.end) <= 0 || s.teacherId != null && !uuid2(s.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
     for (const d of [s.effectiveFrom, s.effectiveTo]) if (d && (!/^\d{4}-\d{2}-\d{2}$/.test(d) || dateKey(/* @__PURE__ */ new Date(`${d}T12:00:00`)) !== d)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
     if (!allowHistorical && s.effectiveFrom && s.effectiveTo && s.effectiveFrom > s.effectiveTo || s.repeat && !["weekly", "biweekly", "once"].includes(s.repeat) || ["biweekly", "once"].includes(s.repeat) && !s.effectiveFrom || s.repeat === "once" && (/* @__PURE__ */ new Date(`${s.effectiveFrom}T12:00:00`)).getDay() !== s.day) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
     const key = [s.day, s.start, s.effectiveFrom || "", s.effectiveTo || ""].join("|");
@@ -204,11 +292,11 @@ function validateGroup(g, allowHistorical = false) {
   }
 }
 function checkLesson(l, groups) {
-  if (!plain(l) || !uuid(l.id) || !uuid(l.groupId) || l.teacherId != null && !uuid(l.teacherId) || l.deleted !== void 0 && typeof l.deleted !== "boolean") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435");
+  if (!plain2(l) || !uuid2(l.id) || !uuid2(l.groupId) || l.teacherId != null && !uuid2(l.teacherId) || l.deleted !== void 0 && typeof l.deleted !== "boolean") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435");
   validateLesson(l);
   const g = groups.find((g2) => g2.id === l.groupId);
   if (!g) throw Error("\u0417\u0430\u043D\u044F\u0442\u0438\u0435 \u0441\u0441\u044B\u043B\u0430\u0435\u0442\u0441\u044F \u043D\u0430 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u044E\u0449\u0443\u044E \u0433\u0440\u0443\u043F\u043F\u0443");
-  if (!plain(l.attendance) || Object.entries(l.attendance).some(([id, mark]) => !uuid(id) || !["present", "absent", "excused"].includes(mark))) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u044C");
+  if (!plain2(l.attendance) || Object.entries(l.attendance).some(([id, mark]) => !uuid2(id) || !["present", "absent", "excused"].includes(mark))) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u044C");
 }
 async function buildTransfer({ kind, source, existing, users, overwrite = false }) {
   if (!["csv", "restore"].includes(kind) || typeof source !== "string" || source.length > 5e6) throw Error("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u043E\u0440\u043C\u0430\u0442 \u0438 \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430 (\u0434\u043E 5 \u041C\u0411)");
@@ -286,7 +374,7 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
     if (copy?.format !== "orbita-journal" || copy.formatVersion !== 1 || !Array.isArray(copy.groups) || !Array.isArray(copy.lessons) || !Array.isArray(copy.users) || copy.groups.length > 1e3 || copy.lessons.length > 5e3 || copy.users.length > 500) throw Error("\u041D\u0443\u0436\u043D\u0430 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F \u041E\u0440\u0431\u0438\u0442\u044B v1 (\u0434\u043E 1000 \u0433\u0440\u0443\u043F\u043F \u0438 5000 \u0437\u0430\u043D\u044F\u0442\u0438\u0439)");
     const groupIDs = /* @__PURE__ */ new Set(), lessonIDs = /* @__PURE__ */ new Set(), userIDs = /* @__PURE__ */ new Set();
     for (const u of copy.users) {
-      if (!plain(u) || !uuid(u.id) || userIDs.has(u.id) || typeof u.login !== "string") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0438 \u0432 \u043A\u043E\u043F\u0438\u0438");
+      if (!plain2(u) || !uuid2(u.id) || userIDs.has(u.id) || typeof u.login !== "string") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0438 \u0432 \u043A\u043E\u043F\u0438\u0438");
       userIDs.add(u.id);
     }
     const mapTeacher = (id) => {
@@ -306,7 +394,11 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
       let value = { ...old || {}, ...structuredClone(raw), teacherId: mapTeacher(raw.teacherId), createdBy: raw.createdBy ? mapTeacher(raw.createdBy) : null, schedule: raw.schedule.map((s) => ({ ...s, ...s.teacherId ? { teacherId: mapTeacher(s.teacherId) } : {} })) };
       if (old) {
         if (overwrite) {
-          value.students = [...old.students.filter((s) => !raw.students.some((x) => x.id === s.id)), ...raw.students.map((s) => ({ ...old.students.find((x) => x.id === s.id), ...s }))];
+          value.students = [...old.students.filter((s) => !raw.students.some((x) => x.id === s.id)), ...raw.students.map((s) => {
+            const prior = { ...old.students.find((x) => x.id === s.id) };
+            for (const k of [...profileKeys, "personId"]) delete prior[k];
+            return { ...prior, ...s, personId: s.personId || null };
+          })];
         } else {
           value = { ...old, students: [...old.students, ...raw.students.filter((s) => !old.students.some((x) => x.id === s.id))] };
         }
@@ -316,7 +408,7 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
       put("groups", value);
     }
     for (const raw of copy.lessons) {
-      if (!plain(raw) || lessonIDs.has(raw.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u0437\u0430\u043D\u044F\u0442\u0438\u044F \u0432 \u043A\u043E\u043F\u0438\u0438");
+      if (!plain2(raw) || lessonIDs.has(raw.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u0437\u0430\u043D\u044F\u0442\u0438\u044F \u0432 \u043A\u043E\u043F\u0438\u0438");
       lessonIDs.add(raw.id);
       const old = lessons.find((l) => l.id === raw.id);
       const value = { ...old || {}, ...structuredClone(raw), teacherId: mapTeacher(raw.teacherId) };
@@ -331,13 +423,62 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
     }
     warnings.push("\u0423\u0447\u0451\u0442\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438 \u0438 \u043F\u0430\u0440\u043E\u043B\u0438 \u043D\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u044E\u0442\u0441\u044F. \u0417\u0430\u043F\u0438\u0441\u0438, \u043A\u043E\u0442\u043E\u0440\u044B\u0445 \u043D\u0435\u0442 \u0432 \u0444\u0430\u0439\u043B\u0435, \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F. \u041B\u0438\u0448\u043D\u0438\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u0438 \u0432 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0445 \u0433\u0440\u0443\u043F\u043F\u0430\u0445 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F.");
   }
+  assertSharedProfiles(groups);
   if (changes.groups.length > 1e3 || changes.lessons.length > 5e3) throw Error("\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0438\u0441\u0435\u0439 \u0437\u0430 \u043E\u0434\u043D\u0443 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044E");
   const checks = { groups: existing.groups.map((g) => ({ id: g.id, version: g.version })), lessons: existing.lessons.map((l) => ({ id: l.id, version: l.version })) };
-  return { changes, checks, summary, details, warnings, digest: await digest({ kind, source, overwrite, changes, checks }) };
+  return { changes, checks, summary, details, warnings, digest: await digest2({ kind, source, overwrite, changes, checks }) };
+}
+
+// src/scheduling.mjs
+function generatePeriod(groups, period, existing) {
+  if (!period || !["weeks", "months"].includes(period.unit) || !Number.isInteger(period.count) || period.count < 1 || period.count > (period.unit === "weeks" ? 4 : 6) || !/^\d{4}-\d{2}-\d{2}$/.test(period.start) || dateKey(/* @__PURE__ */ new Date(`${period.start}T12:00:00`)) !== period.start) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043D\u0430\u0447\u0430\u043B\u043E \u0438 \u043F\u0435\u0440\u0438\u043E\u0434: 1\u20134 \u043D\u0435\u0434\u0435\u043B\u0438 \u0438\u043B\u0438 1\u20136 \u043C\u0435\u0441\u044F\u0446\u0435\u0432");
+  const start = /* @__PURE__ */ new Date(`${period.start}T12:00:00`), end = new Date(start);
+  if (period.unit === "weeks") end.setDate(end.getDate() + 7 * period.count);
+  else {
+    end.setDate(1);
+    end.setMonth(end.getMonth() + period.count);
+  }
+  const until = dateKey(end), out = [];
+  for (let m = new Date(start.getFullYear(), start.getMonth(), 1); m < end; m.setMonth(m.getMonth() + 1)) {
+    out.push(...recurrence(groups, m.getFullYear(), m.getMonth(), [...existing, ...out]).filter((l) => l.date >= period.start && l.date < until));
+  }
+  return out;
+}
+function lessonConflicts(candidate, existing, groups) {
+  if (candidate.deleted || candidate.status === "cancelled") return [];
+  const byId = new Map(groups.map((g2) => [g2.id, g2]));
+  const g = byId.get(candidate.groupId);
+  if (!g) return [];
+  const teacher = candidate.teacherId ?? g.teacherId, students = new Set(g.students.map(personId));
+  const out = [];
+  for (const l of existing) {
+    if (l.id === candidate.id || l.deleted || l.status === "cancelled" || l.date !== candidate.date || candidate.start >= l.end || candidate.end <= l.start) continue;
+    const other = byId.get(l.groupId);
+    if (!other) continue;
+    const reasons = [];
+    if (g.id === other.id) reasons.push("\u0442\u0430 \u0436\u0435 \u0433\u0440\u0443\u043F\u043F\u0430");
+    if (teacher && teacher === (l.teacherId ?? other.teacherId)) reasons.push("\u0442\u043E\u0442 \u0436\u0435 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C");
+    const overlap = other.students.filter((s) => students.has(personId(s)));
+    if (overlap.length) reasons.push(`\u043E\u0431\u0449\u0438\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u0438: ${overlap.length}`);
+    if (reasons.length) out.push({ id: l.id, groupId: l.groupId, groupName: other.name, date: l.date, start: l.start, end: l.end, reasons });
+    if (out.length >= 200) break;
+  }
+  return out;
+}
+function batchConflicts(lessons, existing, groups) {
+  const out = [], seen = /* @__PURE__ */ new Set();
+  for (const l of lessons) for (const c of lessonConflicts(l, [...existing, ...lessons], groups)) {
+    const key = [l.id, c.id].sort().join(":");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...c, candidateId: l.id, candidateGroup: groups.find((g) => g.id === l.groupId)?.name });
+    if (out.length >= 200) return out;
+  }
+  return out;
 }
 
 // supabase/handler.mjs
-var uuid2 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+var uuid3 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 var publicProfile = (p) => ({ id: p.id, login: p.login, name: p.name, role: p.role, disabled: p.disabled, mustChange: p.must_change, subjects: p.subjects || [] });
 var passwordStatus = (p) => ({ passwordChangedAt: p.password_changed_at || null, temporaryPasswordAt: p.temporary_password_at || null });
 function fail(message, status = 400) {
@@ -393,7 +534,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
     await backend(query("audit"), { method: "POST", body: { actor: p.id, action, target } });
   }
   async function save(table, payload, metadata) {
-    if (!uuid2(payload.id) || !Number.isInteger(payload.version) || payload.version < 0) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0438\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u044F");
+    if (!uuid3(payload.id) || !Number.isInteger(payload.version) || payload.version < 0) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0438\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u044F");
     const record = { ...metadata, payload, version: payload.version + 1 };
     if (payload.version === 0) {
       await backend(query(table), { method: "POST", body: { id: payload.id, ...record } });
@@ -452,17 +593,65 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         return json({ ok: true });
       }
       if (p.must_change) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0437\u0430\u043C\u0435\u043D\u0438\u0442\u0435 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u044B\u0439 \u043F\u0430\u0440\u043E\u043B\u044C", 403);
+      const operation = route.match(/^operations\/(students|calendar)\/(preview|commit)$/);
+      if (operation && request.method === "POST") {
+        const [, kind, step] = operation;
+        if (kind === "students" && b.input?.action !== "update") isAdmin();
+        if (step === "commit") {
+          if (!uuid3(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest)) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F");
+          const saved = await one("imports", b.requestId);
+          if (saved) {
+            if (saved.summary?.actor !== p.id || saved.summary?.digest !== b.digest) fail("ID \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u0443\u0436\u0435 \u0437\u0430\u043D\u044F\u0442", 409);
+            return json({ ok: true, summary: saved.summary });
+          }
+        }
+        const [gs, ls, profiles] = await Promise.all([all("groups", "id"), all("lessons", "id"), all("profiles", "id")]);
+        const groups = gs.map((r) => ({ ...r.payload, version: r.version })), lessons = ls.map((r) => ({ ...r.payload, version: r.version }));
+        let plan;
+        try {
+          if (kind === "students") {
+            if (!isManager(p.role) && !groups.some((g) => !g.archived && canTeachGroup(p, g) && g.students.some((s) => personId(s) === b.input?.personId))) fail("\u0418\u0437\u043C\u0435\u043D\u044F\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0438 \u0441\u0432\u043E\u0438\u0445 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432", 403);
+            plan = await studentPlan({ groups, lessons, input: b.input });
+          } else {
+            if (!Array.isArray(b.input?.groupIds) || !b.input.groupIds.length || b.input.groupIds.length > 1e3 || new Set(b.input.groupIds).size !== b.input.groupIds.length) fail("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0433\u0440\u0443\u043F\u043F\u044B");
+            const chosen = b.input.groupIds.map((id) => groups.find((g) => g.id === id));
+            if (chosen.some((g) => !g || g.archived || !canTeachGroup(p, g))) fail("\u041D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430", 403);
+            const eligible = chosen.map((g) => ({ ...g, schedule: isManager(p.role) ? g.schedule : g.schedule.filter((s) => !s.teacherId || s.teacherId === p.id) }));
+            const added = generatePeriod(eligible, b.input.period, lessons);
+            if (added.length > 5e3) fail("\u041D\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 5000 \u0437\u0430\u043D\u044F\u0442\u0438\u0439 \u0437\u0430 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044E");
+            for (const l of added) {
+              validateLesson(l);
+              l.id = await idFor(["calendar", l.groupId, l.date, l.start]);
+              const g = groups.find((g2) => g2.id === l.groupId), tid = l.teacherId ?? g.teacherId;
+              if (tid) {
+                const t = profiles.find((t2) => t2.id === tid);
+                if (!t || t.disabled || !canTeachGroup(t, { ...g, teacherId: tid })) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F \u0438 \u0440\u0430\u0437\u0440\u0435\u0448\u0451\u043D\u043D\u044B\u0435 \u043F\u0440\u0435\u0434\u043C\u0435\u0442\u044B");
+              }
+            }
+            const changes = { groups: [], lessons: added.map((payload) => ({ expectedVersion: 0, payload })) }, checks = { groups: groups.map((g) => ({ id: g.id, version: g.version })), lessons: lessons.map((l) => ({ id: l.id, version: l.version })) };
+            plan = { changes, checks, summary: { newGroups: 0, updatedGroups: 0, newStudents: 0, newLessons: added.length, updatedLessons: 0, skipped: 0 }, details: added.map((l) => ({ label: `${groups.find((g) => g.id === l.groupId).name} \xB7 ${l.date} ${l.start}\u2013${l.end}` })), warnings: [], conflicts: batchConflicts(added, lessons, groups), digest: await digest2({ input: b.input, changes, checks }) };
+          }
+        } catch (e) {
+          fail(e.message, e.status || 400);
+        }
+        if (step === "preview") return json({ digest: plan.digest, summary: plan.summary, details: plan.details, warnings: plan.warnings, profile: plan.profile, conflicts: plan.conflicts || [] });
+        if (b.digest !== plan.digest) fail("\u0414\u0430\u043D\u043D\u044B\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0438\u0441\u044C. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440.", 409);
+        if (plan.conflicts?.length && b.confirmConflicts !== true) fail("\u041F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0439 \u0441 \u043F\u0435\u0440\u0435\u0441\u0435\u0447\u0435\u043D\u0438\u044F\u043C\u0438", 409);
+        if (!plan.changes.groups.length && !plan.changes.lessons.length) return json({ ok: true, summary: plan.summary });
+        const summary = await backend("/rest/v1/rpc/orbita_apply_transfer", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_kind: kind, p_request: b.requestId, p_digest: plan.digest, p_changes: plan.changes, p_checks: plan.checks, p_summary: plan.summary } });
+        return json({ ok: true, summary });
+      }
       if (route === "transfer/history" && request.method === "GET") {
         if (p.role !== "owner") fail("\u0418\u0441\u0442\u043E\u0440\u0438\u044F \u043A\u043E\u043F\u0438\u0439 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
-        const rows = await backend(query("imports", "source=in.(orbita-csv,orbita-restore)&order=at.desc&limit=20&select=id,at,source,summary"));
+        const rows = await backend(query("imports", "source=in.(orbita-csv,orbita-restore,orbita-students,orbita-calendar)&order=at.desc&limit=20&select=id,at,source,summary"));
         return json({ entries: rows.map((r) => ({ id: r.id, at: r.at, source: r.source, summary: r.summary })) });
       }
       const savedCopy = route.match(/^transfer\/backups\/([0-9a-f-]+)$/i);
       if (savedCopy && request.method === "GET") {
         if (p.role !== "owner") fail("\u0414\u043E\u0441\u0442\u0443\u043F \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
-        if (!uuid2(savedCopy[1])) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
+        if (!uuid3(savedCopy[1])) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         const saved = await one("imports", savedCopy[1]);
-        if (!saved || !["orbita-csv", "orbita-restore"].includes(saved.source)) fail("\u041A\u043E\u043F\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+        if (!saved || !["orbita-csv", "orbita-restore", "orbita-students", "orbita-calendar"].includes(saved.source)) fail("\u041A\u043E\u043F\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
         await audit(p, "backup:journal", saved.id);
         return json(saved.snapshot);
       }
@@ -472,7 +661,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         const [, kind, step] = transfer;
         if (kind === "restore" && p.role !== "owner") fail("\u0412\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
         if (b.overwrite !== void 0 && typeof b.overwrite !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F");
-        if (step === "commit" && (!uuid2(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest))) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B");
+        if (step === "commit" && (!uuid3(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest))) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B");
         if (step === "commit") {
           const applied = await one("imports", b.requestId);
           if (applied) {
@@ -520,7 +709,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       if (route === "bootstrap" && request.method === "GET") {
         const [groups, lessons, profiles] = await Promise.all([all("groups", "id"), all("lessons", "date,start,id"), all("profiles", "name,id")]);
         const groupLookup = new Map(groups.map((g) => [g.id, g]));
-        return json({ groups: groups.map((r) => ({ ...r.payload, students: r.payload.students.map((s) => visibleStudent(s, isManager(p.role) || canTeachGroup(p, { teacherId: r.teacher_id, subject: r.payload.subject, createdBy: r.payload.createdBy }) || canTeachGroup(p, { teacherId: p.id, subject: r.payload.subject, createdBy: r.payload.createdBy }) && (r.payload.schedule?.some((t) => t.teacherId === p.id && t.active !== false) || lessons.some((l) => !l.payload.deleted && l.group_id === r.id && l.payload.teacherId === p.id)))), version: r.version })), lessons: lessons.filter((r) => {
+        return json({ groups: groups.map((r) => ({ ...r.payload, students: r.payload.students.map((s) => visibleStudent({ ...s, personId: personId(s) }, isManager(p.role) || canTeachGroup(p, { teacherId: r.teacher_id, subject: r.payload.subject, createdBy: r.payload.createdBy }) || canTeachGroup(p, { teacherId: p.id, subject: r.payload.subject, createdBy: r.payload.createdBy }) && (r.payload.schedule?.some((t) => t.teacherId === p.id && t.active !== false) || lessons.some((l) => !l.payload.deleted && l.group_id === r.id && l.payload.teacherId === p.id)))), version: r.version })), lessons: lessons.filter((r) => {
           if (isManager(p.role) || !r.payload.deleted) return true;
           const g = groupLookup.get(r.group_id);
           return !!g && canTeachGroup(p, { teacherId: r.payload.teacherId ?? g.teacher_id, subject: g.payload.subject, createdBy: g.payload.createdBy });
@@ -529,16 +718,16 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       const match = route.match(/^(groups|lessons)\/([0-9a-f-]+)$/i);
       if (match && request.method === "PUT") {
         const [_, table, id] = match;
-        if (!uuid2(id) || b.id !== id) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
+        if (!uuid3(id) || b.id !== id) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         let event = `save:${table}`;
         if (table === "groups") {
           const previous = await one("groups", id);
-          if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 120 || typeof b.subject !== "string" || !b.subject.trim() || b.subject.trim().length > 80 || /[\x00-\x1f\x7f]/.test(b.subject) || b.teacherId != null && !uuid2(b.teacherId)) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F");
+          if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 120 || typeof b.subject !== "string" || !b.subject.trim() || b.subject.trim().length > 80 || /[\x00-\x1f\x7f]/.test(b.subject) || b.teacherId != null && !uuid3(b.teacherId)) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F");
           const normalizedSubject = b.subject.trim();
           if (!Array.isArray(b.students) || b.students.length > 100 || !Array.isArray(b.schedule) || b.schedule.length > 20) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           if (b.students.some((s) => !s || typeof s !== "object") || b.schedule.some((s) => !s || typeof s !== "object")) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           for (const slot of b.schedule) if (slot.teacherId) {
-            if (!uuid2(slot.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438");
+            if (!uuid3(slot.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438");
             if (isManager(p.role)) {
               const t2 = await one("profiles", slot.teacherId);
               if (!t2 || t2.disabled) fail("\u041F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
@@ -553,13 +742,19 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
             } else if (b.archived) fail("\u041D\u0435\u043B\u044C\u0437\u044F \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u0433\u0440\u0443\u043F\u043F\u0443 \u0441\u0440\u0430\u0437\u0443 \u0432 \u0430\u0440\u0445\u0438\u0432\u0435", 403);
             if (b.schedule?.some((slot) => slot.teacherId && slot.teacherId !== p.id)) fail("\u041D\u0435\u043B\u044C\u0437\u044F \u043D\u0430\u0437\u043D\u0430\u0447\u0430\u0442\u044C \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438 \u0434\u0440\u0443\u0433\u043E\u0433\u043E \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F", 403);
           }
+          const people = /* @__PURE__ */ new Set();
+          for (const s of b.students) {
+            const pid = s.personId || previous?.payload.students?.find((x) => x.id === s.id)?.personId || s.id;
+            if (people.has(pid)) fail("\u0423\u0447\u0435\u043D\u0438\u043A \u0443\u0436\u0435 \u0435\u0441\u0442\u044C \u0432 \u044D\u0442\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u0435");
+            people.add(pid);
+          }
           const t = b.teacherId ? await one("profiles", b.teacherId) : null;
           if (b.teacherId && (!t || t.disabled)) fail("\u041F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
           if (isManager(p.role) && t && !isManager(t.role) && subjects.includes(normalizedSubject) && !t.subjects?.includes(normalizedSubject)) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0440\u0430\u0437\u0440\u0435\u0448\u0438\u0442\u0435 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044E \u044D\u0442\u043E\u0442 \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0432 \u0435\u0433\u043E \u043F\u0440\u043E\u0444\u0438\u043B\u0435");
           if (!Array.isArray(b.students) || b.students.length > 100 || !Array.isArray(b.schedule) || b.schedule.length > 20) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           const ids = /* @__PURE__ */ new Set();
           for (const s of b.students) {
-            if (!uuid2(s.id) || ids.has(s.id) || typeof s.name !== "string" || !s.name.trim() || s.name.length > 240) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432");
+            if (!uuid3(s.id) || ids.has(s.id) || typeof s.name !== "string" || !s.name.trim() || s.name.length > 240) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432");
             ids.add(s.id);
           }
           const slots = /* @__PURE__ */ new Set();
@@ -573,8 +768,22 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
             if (slots.has(k)) fail("\u041F\u043E\u0432\u0442\u043E\u0440 \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438");
             slots.add(k);
           }
+          let common = [];
+          if (b.students.some((s) => s.personId || previous?.payload.students?.some((x) => x.id === s.id))) {
+            common = await all("groups", "id");
+            for (const s of b.students) {
+              const old = previous?.payload.students?.find((x) => x.id === s.id);
+              const pid = s.personId || old?.personId || old?.id;
+              if (!pid) continue;
+              if (!uuid3(pid) || old && personId(old) !== pid) fail("\u0421\u0432\u044F\u0437\u0438 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0423\u0447\u0435\u043D\u0438\u043A\u0438\xBB");
+              if (!old && !isManager(p.role)) fail("\u0421\u0432\u044F\u0437\u044B\u0432\u0430\u0442\u044C \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u043C\u043E\u0436\u0435\u0442 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
+              const canonical = common.flatMap((g) => g.payload.students).find((x) => personId(x) === pid);
+              if (!canonical || !sameProfile(canonical, s)) fail("\u041E\u0431\u0449\u0438\u0435 \u0424\u0418\u041E \u0438 \u043A\u043E\u043D\u0442\u0430\u043A\u0442\u044B \u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0423\u0447\u0435\u043D\u0438\u043A\u0438\xBB");
+              s.personId = pid;
+            }
+          }
           if (Boolean(previous?.payload.archived) !== Boolean(b.archived)) event = b.archived ? "archive:groups" : "restore:groups";
-          await save(table, { ...previous?.payload || {}, id, name: b.name.trim(), subject: normalizedSubject, teacherId: b.teacherId || null, createdBy: previous?.payload.createdBy || (!isManager(p.role) ? p.id : null), students: b.students.map((s) => {
+          const groupPayload = { ...previous?.payload || {}, id, name: b.name.trim(), subject: normalizedSubject, teacherId: b.teacherId || null, createdBy: previous?.payload.createdBy || (!isManager(p.role) ? p.id : null), students: b.students.map((s) => {
             const old = previous?.payload.students?.find((x) => x.id === s.id) || {};
             const merged = { ...old, ...s };
             let normalized;
@@ -583,20 +792,32 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
             } catch (e) {
               fail(e.message);
             }
-            const result = { ...old, ...normalized };
+            const result = { ...old, ...normalized, personId: s.personId || old.personId || s.id };
             for (const key of contactKeys) if (!(key in normalized)) delete result[key];
             return result;
-          }), schedule: b.schedule.map((s) => ({ day: s.day, start: s.start, end: s.end, ...s.id ? { id: s.id } : {}, effectiveFrom: s.effectiveFrom || null, effectiveTo: s.effectiveTo || null, ...s.repeat ? { repeat: s.repeat } : {}, active: s.active !== false, ...s.teacherId ? { teacherId: s.teacherId } : {} })), archived: Boolean(b.archived), version: b.version }, { teacher_id: b.teacherId || null });
+          }), schedule: b.schedule.map((s) => ({ day: s.day, start: s.start, end: s.end, ...s.id ? { id: s.id } : {}, effectiveFrom: s.effectiveFrom || null, effectiveTo: s.effectiveTo || null, ...s.repeat ? { repeat: s.repeat } : {}, active: s.active !== false, ...s.teacherId ? { teacherId: s.teacherId } : {} })), archived: Boolean(b.archived), version: b.version };
+          const linking = b.students.some((s) => s.personId && !previous?.payload.students?.some((old) => old.id === s.id));
+          if (linking) {
+            const ls = await all("lessons", "id");
+            const checks = { groups: common.map((r) => ({ id: r.id, version: r.version })), lessons: ls.map((r) => ({ id: r.id, version: r.version })) };
+            const changes = { groups: [{ expectedVersion: b.version, payload: groupPayload }], lessons: [] };
+            await backend("/rest/v1/rpc/orbita_apply_transfer", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_kind: "students", p_request: crypto.randomUUID(), p_digest: await digest2({ changes, checks }), p_changes: changes, p_checks: checks, p_summary: { newGroups: previous ? 0 : 1, updatedGroups: previous ? 1 : 0, newStudents: b.students.filter((s) => !previous?.payload.students?.some((x) => x.id === s.id)).length, newLessons: 0, updatedLessons: 0 } } });
+          } else await save(table, groupPayload, { teacher_id: b.teacherId || null });
         } else {
           try {
             validateLesson(b);
           } catch (e) {
             fail(e.message);
           }
-          if (!uuid2(b.groupId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
+          if (!uuid3(b.groupId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
           const g = await one("groups", b.groupId);
           if (!g) fail("\u0413\u0440\u0443\u043F\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430");
           const old = await one("lessons", id);
+          const shifted = !old || ["groupId", "date", "start", "end", "teacherId"].some((k) => (old.payload[k] ?? null) !== (b[k] ?? null)) || old.payload.status === "cancelled" && b.status !== "cancelled";
+          if (shifted && b.confirmConflicts !== true) {
+            const [allGroups, allLessons] = await Promise.all([all("groups", "id"), all("lessons", "id")]);
+            if (lessonConflicts(b, allLessons.map((r) => r.payload), allGroups.map((r) => r.payload)).length) fail("\u0415\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u0441\u0435\u0447\u0435\u043D\u0438\u044F \u0437\u0430\u043D\u044F\u0442\u0438\u0439. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0435\u043D\u0438\u0435 \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435.", 409);
+          }
           if (b.deleted !== void 0 && typeof b.deleted !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F");
           const changingDeletion = Boolean(b.deleted) !== Boolean(old?.payload.deleted);
           if (!isManager(p.role) && old?.payload.deleted && !changingDeletion) fail("\u0423\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435 \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C", 403);
@@ -610,7 +831,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           if (!permitted(g, b) || old && !permitted(await one("groups", old.group_id), old.payload)) fail("\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u0432\u043E\u0438 \u0433\u0440\u0443\u043F\u043F\u044B \u043F\u043E \u0440\u0430\u0437\u0440\u0435\u0448\u0451\u043D\u043D\u044B\u043C \u043F\u0440\u0435\u0434\u043C\u0435\u0442\u0430\u043C", 403);
           if (!isManager(p.role) && (b.teacherId ?? null) !== (old?.payload.teacherId ?? null) && !(!old && b.teacherId === p.id && g.teacher_id === p.id)) fail("\u041D\u0430\u0437\u043D\u0430\u0447\u0430\u0442\u044C \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F \u043C\u043E\u0436\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
           if (b.teacherId && (!old || b.teacherId !== old.payload.teacherId || b.groupId !== old.group_id)) {
-            if (!uuid2(b.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C");
+            if (!uuid3(b.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C");
             const t = await one("profiles", b.teacherId);
             if (!t || t.disabled) fail("\u041F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
             if (!isManager(t.role) && subjects.includes(g.payload.subject) && !t.subjects?.includes(g.payload.subject) && g.payload.createdBy !== t.id) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0440\u0430\u0437\u0440\u0435\u0448\u0438\u0442\u0435 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044E \u044D\u0442\u043E\u0442 \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0432 \u0435\u0433\u043E \u043F\u0440\u043E\u0444\u0438\u043B\u0435");
@@ -645,7 +866,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       const account = route.match(/^users\/([0-9a-f-]+)(\/(?:password|profile))?$/i);
       if (account) {
         const id = account[1];
-        if (!uuid2(id)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
+        if (!uuid3(id)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         const target = await one("profiles", id);
         if (!target) fail("\u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D", 404);
         if (account[2] === "/profile" && request.method === "PATCH") {

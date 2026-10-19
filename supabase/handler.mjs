@@ -1,7 +1,9 @@
 import {subjects,validateLesson,duration,dateKey} from '../src/model.mjs';
 import {isManager,canCreateAccount,canManageAccount,canTeachGroup} from '../src/roles.mjs';
-import {buildTransfer} from '../src/data-transfer.mjs';
+import {buildTransfer,idFor,digest} from '../src/data-transfer.mjs';
 import {studentRecord,contactKeys,visibleStudent} from '../src/student.mjs';
+import {studentPlan,personId,sameProfile} from '../src/student-directory.mjs';
+import {generatePeriod,batchConflicts,lessonConflicts} from '../src/scheduling.mjs';
 
 const uuid = v => typeof v==='string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 const publicProfile = p => ({id:p.id,login:p.login,name:p.name,role:p.role,disabled:p.disabled,mustChange:p.must_change,subjects:p.subjects||[]});
@@ -65,15 +67,41 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
     await audit(p,b.event,p.id);return json({ok:true});
    }
    if(p.must_change)fail('Сначала замените временный пароль',403);
+   const operation=route.match(/^operations\/(students|calendar)\/(preview|commit)$/);
+   if(operation&&request.method==='POST'){
+    const [,kind,step]=operation;if(kind==='students'&&b.input?.action!=='update')isAdmin();
+    if(step==='commit'){
+     if(!uuid(b.requestId)||typeof b.digest!=='string'||!/^[a-f0-9]{64}$/.test(b.digest))fail('Сначала проверьте изменения');const saved=await one('imports',b.requestId);
+     if(saved){if(saved.summary?.actor!==p.id||saved.summary?.digest!==b.digest)fail('ID операции уже занят',409);return json({ok:true,summary:saved.summary});}
+    }
+    const [gs,ls,profiles]=await Promise.all([all('groups','id'),all('lessons','id'),all('profiles','id')]);const groups=gs.map(r=>({...r.payload,version:r.version})),lessons=ls.map(r=>({...r.payload,version:r.version}));let plan;
+    try{
+     if(kind==='students'){if(!isManager(p.role)&&!groups.some(g=>!g.archived&&canTeachGroup(p,g)&&g.students.some(s=>personId(s)===b.input?.personId)))fail('Изменять можно только карточки своих учеников',403);plan=await studentPlan({groups,lessons,input:b.input});}
+     else{
+      if(!Array.isArray(b.input?.groupIds)||!b.input.groupIds.length||b.input.groupIds.length>1000||new Set(b.input.groupIds).size!==b.input.groupIds.length)fail('Выберите группы');
+      const chosen=b.input.groupIds.map(id=>groups.find(g=>g.id===id));if(chosen.some(g=>!g||g.archived||!canTeachGroup(p,g)))fail('Недоступная группа',403);
+      const eligible=chosen.map(g=>({...g,schedule:isManager(p.role)?g.schedule:g.schedule.filter(s=>!s.teacherId||s.teacherId===p.id)}));
+      const added=generatePeriod(eligible,b.input.period,lessons);if(added.length>5000)fail('Не больше 5000 занятий за операцию');
+      for(const l of added){validateLesson(l);l.id=await idFor(['calendar',l.groupId,l.date,l.start]);const g=groups.find(g=>g.id===l.groupId),tid=l.teacherId??g.teacherId;if(tid){const t=profiles.find(t=>t.id===tid);if(!t||t.disabled||!canTeachGroup(t,{...g,teacherId:tid}))fail('Проверьте назначение преподавателя и разрешённые предметы');}}
+      const changes={groups:[],lessons:added.map(payload=>({expectedVersion:0,payload}))},checks={groups:groups.map(g=>({id:g.id,version:g.version})),lessons:lessons.map(l=>({id:l.id,version:l.version}))};
+      plan={changes,checks,summary:{newGroups:0,updatedGroups:0,newStudents:0,newLessons:added.length,updatedLessons:0,skipped:0},details:added.map(l=>({label:`${groups.find(g=>g.id===l.groupId).name} · ${l.date} ${l.start}–${l.end}`})),warnings:[],conflicts:batchConflicts(added,lessons,groups),digest:await digest({input:b.input,changes,checks})};
+     }
+    }catch(e){fail(e.message,e.status||400);}
+    if(step==='preview')return json({digest:plan.digest,summary:plan.summary,details:plan.details,warnings:plan.warnings,profile:plan.profile,conflicts:plan.conflicts||[]});
+    if(b.digest!==plan.digest)fail('Данные изменились. Повторите предпросмотр.',409);
+    if(plan.conflicts?.length&&b.confirmConflicts!==true)fail('Подтвердите создание занятий с пересечениями',409);
+    if(!plan.changes.groups.length&&!plan.changes.lessons.length)return json({ok:true,summary:plan.summary});
+    const summary=await backend('/rest/v1/rpc/orbita_apply_transfer',{method:'POST',body:{p_actor:p.id,p_iat:claims.iat,p_kind:kind,p_request:b.requestId,p_digest:plan.digest,p_changes:plan.changes,p_checks:plan.checks,p_summary:plan.summary}});return json({ok:true,summary});
+   }
    if(route==='transfer/history'&&request.method==='GET'){
     if(p.role!=='owner')fail('История копий доступна только главному admin',403);
-    const rows=await backend(query('imports','source=in.(orbita-csv,orbita-restore)&order=at.desc&limit=20&select=id,at,source,summary'));
+    const rows=await backend(query('imports','source=in.(orbita-csv,orbita-restore,orbita-students,orbita-calendar)&order=at.desc&limit=20&select=id,at,source,summary'));
     return json({entries:rows.map(r=>({id:r.id,at:r.at,source:r.source,summary:r.summary}))});
    }
    const savedCopy=route.match(/^transfer\/backups\/([0-9a-f-]+)$/i);
    if(savedCopy&&request.method==='GET'){
     if(p.role!=='owner')fail('Доступ только главному admin',403);if(!uuid(savedCopy[1]))fail('Некорректный ID');
-    const saved=await one('imports',savedCopy[1]);if(!saved||!['orbita-csv','orbita-restore'].includes(saved.source))fail('Копия не найдена',404);
+    const saved=await one('imports',savedCopy[1]);if(!saved||!['orbita-csv','orbita-restore','orbita-students','orbita-calendar'].includes(saved.source))fail('Копия не найдена',404);
     await audit(p,'backup:journal',saved.id);return json(saved.snapshot);
    }
    const transfer=route.match(/^transfer\/(csv|restore)\/(preview|commit)$/);
@@ -115,7 +143,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
     // All active teachers see the same calendar. Only admins manage groups/accounts.
     const [groups,lessons,profiles]=await Promise.all([all('groups','id'),all('lessons','date,start,id'),all('profiles','name,id')]);
     const groupLookup=new Map(groups.map(g=>[g.id,g]));
-     return json({groups:groups.map(r=>({...r.payload,students:r.payload.students.map(s=>visibleStudent(s,isManager(p.role)||canTeachGroup(p,{teacherId:r.teacher_id,subject:r.payload.subject,createdBy:r.payload.createdBy})||canTeachGroup(p,{teacherId:p.id,subject:r.payload.subject,createdBy:r.payload.createdBy})&&(r.payload.schedule?.some(t=>t.teacherId===p.id&&t.active!==false)||lessons.some(l=>!l.payload.deleted&&l.group_id===r.id&&l.payload.teacherId===p.id)))),version:r.version})),lessons:lessons.filter(r=>{
+     return json({groups:groups.map(r=>({...r.payload,students:r.payload.students.map(s=>visibleStudent({...s,personId:personId(s)},isManager(p.role)||canTeachGroup(p,{teacherId:r.teacher_id,subject:r.payload.subject,createdBy:r.payload.createdBy})||canTeachGroup(p,{teacherId:p.id,subject:r.payload.subject,createdBy:r.payload.createdBy})&&(r.payload.schedule?.some(t=>t.teacherId===p.id&&t.active!==false)||lessons.some(l=>!l.payload.deleted&&l.group_id===r.id&&l.payload.teacherId===p.id)))),version:r.version})),lessons:lessons.filter(r=>{
       if(isManager(p.role)||!r.payload.deleted)return true;
       const g=groupLookup.get(r.group_id);
       return !!g&&canTeachGroup(p,{teacherId:r.payload.teacherId??g.teacher_id,subject:g.payload.subject,createdBy:g.payload.createdBy});
@@ -140,16 +168,27 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
       }else if(b.archived)fail('Нельзя создать группу сразу в архиве',403);
       if(b.schedule?.some(slot=>slot.teacherId&&slot.teacherId!==p.id))fail('Нельзя назначать в расписании другого преподавателя',403);
      }
+     const people=new Set();for(const s of b.students){const pid=s.personId||previous?.payload.students?.find(x=>x.id===s.id)?.personId||s.id;if(people.has(pid))fail('Ученик уже есть в этой группе');people.add(pid);}
      const t=b.teacherId?await one('profiles',b.teacherId):null;if(b.teacherId&&(!t||t.disabled))fail('Преподаватель недоступен');
      if(isManager(p.role)&&t&&!isManager(t.role)&&subjects.includes(normalizedSubject)&&!t.subjects?.includes(normalizedSubject))fail('Сначала разрешите преподавателю этот предмет в его профиле');
      if(!Array.isArray(b.students)||b.students.length>100||!Array.isArray(b.schedule)||b.schedule.length>20)fail('Проверьте учеников и расписание');
      const ids=new Set();for(const s of b.students){if(!uuid(s.id)||ids.has(s.id)||typeof s.name!=='string'||!s.name.trim()||s.name.length>240)fail('Проверьте учеников');ids.add(s.id);}
      const slots=new Set();for(const s of b.schedule){if(!Number.isInteger(s.day)||s.day<0||s.day>6||![s.start,s.end].every(t=>typeof t==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(t))||duration(s.start,s.end)<=0)fail('Проверьте расписание');if([s.effectiveFrom,s.effectiveTo].some(d=>d&&(!/^\d{4}-\d{2}-\d{2}$/.test(d)||dateKey(new Date(`${d}T12:00:00`))!==d))||(s.effectiveFrom&&s.effectiveTo&&s.effectiveFrom>s.effectiveTo&&!previous?.payload.schedule?.some(old=>JSON.stringify(old)===JSON.stringify(s))))fail('Проверьте даты расписания');if(s.repeat!==undefined&&!['weekly','biweekly','once'].includes(s.repeat))fail('Неизвестная периодичность');if(['biweekly','once'].includes(s.repeat)&&!s.effectiveFrom)fail('Укажите дату начала повторения');if(s.repeat==='once'&&new Date(`${s.effectiveFrom}T12:00:00`).getDay()!==s.day)fail('Разовый урок должен совпадать с выбранной датой');const k=`${s.day}-${s.start}-${s.effectiveFrom||''}-${s.effectiveTo||''}`;if(slots.has(k))fail('Повтор времени в расписании');slots.add(k);}
+     let common=[];if(b.students.some(s=>s.personId||previous?.payload.students?.some(x=>x.id===s.id))){
+      common=await all('groups','id');for(const s of b.students){const old=previous?.payload.students?.find(x=>x.id===s.id);const pid=s.personId||old?.personId||old?.id;if(!pid)continue;if(!uuid(pid)||old&&personId(old)!==pid)fail('Связи учеников меняются в разделе «Ученики»');if(!old&&!isManager(p.role))fail('Связывать учеников может администратор',403);const canonical=common.flatMap(g=>g.payload.students).find(x=>personId(x)===pid);if(!canonical||!sameProfile(canonical,s))fail('Общие ФИО и контакты меняются в разделе «Ученики»');s.personId=pid;}
+     }
      if(Boolean(previous?.payload.archived)!==Boolean(b.archived))event=b.archived?'archive:groups':'restore:groups';
-     await save(table,{...(previous?.payload||{}),id,name:b.name.trim(),subject:normalizedSubject,teacherId:b.teacherId||null,createdBy:previous?.payload.createdBy||(!isManager(p.role)?p.id:null),students:b.students.map(s=>{const old=previous?.payload.students?.find(x=>x.id===s.id)||{};const merged={...old,...s};let normalized;try{normalized=studentRecord(merged);}catch(e){fail(e.message);}const result={...old,...normalized};for(const key of contactKeys)if(!(key in normalized))delete result[key];return result;}),schedule:b.schedule.map(s=>({day:s.day,start:s.start,end:s.end,...(s.id?{id:s.id}:{}),effectiveFrom:s.effectiveFrom||null,effectiveTo:s.effectiveTo||null,...(s.repeat?{repeat:s.repeat}:{}),active:s.active!==false,...(s.teacherId?{teacherId:s.teacherId}:{})})),archived:Boolean(b.archived),version:b.version},{teacher_id:b.teacherId||null});
+     const groupPayload={...(previous?.payload||{}),id,name:b.name.trim(),subject:normalizedSubject,teacherId:b.teacherId||null,createdBy:previous?.payload.createdBy||(!isManager(p.role)?p.id:null),students:b.students.map(s=>{const old=previous?.payload.students?.find(x=>x.id===s.id)||{};const merged={...old,...s};let normalized;try{normalized=studentRecord(merged);}catch(e){fail(e.message);}const result={...old,...normalized,personId:s.personId||old.personId||s.id};for(const key of contactKeys)if(!(key in normalized))delete result[key];return result;}),schedule:b.schedule.map(s=>({day:s.day,start:s.start,end:s.end,...(s.id?{id:s.id}:{}),effectiveFrom:s.effectiveFrom||null,effectiveTo:s.effectiveTo||null,...(s.repeat?{repeat:s.repeat}:{}),active:s.active!==false,...(s.teacherId?{teacherId:s.teacherId}:{})})),archived:Boolean(b.archived),version:b.version};
+     const linking=b.students.some(s=>s.personId&&!previous?.payload.students?.some(old=>old.id===s.id));
+     if(linking){
+      const ls=await all('lessons','id');const checks={groups:common.map(r=>({id:r.id,version:r.version})),lessons:ls.map(r=>({id:r.id,version:r.version}))};const changes={groups:[{expectedVersion:b.version,payload:groupPayload}],lessons:[]};
+      await backend('/rest/v1/rpc/orbita_apply_transfer',{method:'POST',body:{p_actor:p.id,p_iat:claims.iat,p_kind:'students',p_request:crypto.randomUUID(),p_digest:await digest({changes,checks}),p_changes:changes,p_checks:checks,p_summary:{newGroups:previous?0:1,updatedGroups:previous?1:0,newStudents:b.students.filter(s=>!previous?.payload.students?.some(x=>x.id===s.id)).length,newLessons:0,updatedLessons:0}}});
+     }else await save(table,groupPayload,{teacher_id:b.teacherId||null});
     }else{
      try{validateLesson(b);}catch(e){fail(e.message);}if(!uuid(b.groupId))fail('Некорректная группа');const g=await one('groups',b.groupId);if(!g)fail('Группа не найдена');
      const old=await one('lessons',id);
+     const shifted=!old||['groupId','date','start','end','teacherId'].some(k=>(old.payload[k]??null)!==(b[k]??null))||old.payload.status==='cancelled'&&b.status!=='cancelled';
+     if(shifted&&b.confirmConflicts!==true){const [allGroups,allLessons]=await Promise.all([all('groups','id'),all('lessons','id')]);if(lessonConflicts(b,allLessons.map(r=>r.payload),allGroups.map(r=>r.payload)).length)fail('Есть пересечения занятий. Проверьте предупреждение и подтвердите сохранение.',409);}
      if(b.deleted!==undefined&&typeof b.deleted!=='boolean')fail('Некорректное состояние удаления');
      const changingDeletion=Boolean(b.deleted)!==Boolean(old?.payload.deleted);
       if(!isManager(p.role)&&old?.payload.deleted&&!changingDeletion)fail('Удалённое занятие можно только восстановить',403);
