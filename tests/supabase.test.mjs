@@ -415,3 +415,10 @@ test('contact fields survive normal group edits and are hidden from unrelated te
  group={...tables.groups[0].payload,version:2,students:[{...student,phone:'',age:''}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,200);assert.equal(tables.groups[0].payload.students[0].phone,undefined);assert.equal(tables.groups[0].payload.students[0].age,undefined);assert.equal(tables.groups[0].payload.students[0].guardianPhone,student.guardianPhone);
  group={...group,version:3,students:[{...student,age:999}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,400);
 });
+
+test('revoked subjects and deleted lesson overrides do not grant contact access',async()=>{
+ const {req,tables}=fixture();tables.groups[0].payload.students=[{id:'60000000-0000-4000-8000-000000000001',name:'Ученик',phone:'+79990000000'}];tables.profiles[1].subjects=[];
+ assert.equal((await(await req('bootstrap',teacher)).json()).groups[0].students[0].phone,undefined);
+ tables.lessons.push({id:lid,group_id:gid,date:'2026-10-19',start:'09:00',version:1,payload:{id:lid,groupId:gid,teacherId:other,deleted:true}});
+ assert.equal((await(await req('bootstrap',other)).json()).groups[0].students[0].phone,undefined);
+});
