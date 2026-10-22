@@ -9,6 +9,14 @@ const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',sta
 const csv='group;subject;teacher_login;student_code;student_name;day;start;end\nНовая;Математика;teacher.01;S2;Новый;1;09:00;10:00';
 const existing=()=>({groups:[structuredClone(group)],lessons:[structuredClone(lesson)]});
 const copy=(groups=[group],lessons=[lesson],users=[teacher])=>JSON.stringify({format:'orbita-journal',formatVersion:1,groups,lessons,users});
+
+test('CSV roster changes freeze the existing lesson roster and new groups have at most ten pupils',async()=>{
+ const source='group;subject;teacher_login;student_code;student_name\nГруппа;Английский;teacher.01;S2;Новый ученик';
+ const p=await buildTransfer({kind:'csv',source,existing:existing(),users:[teacher]});
+ const g=p.changes.groups[0].payload;assert.equal(g.students.length,2);assert.deepEqual(g.frozenLessons[lid].students.map(s=>s.id),[sid]);
+ const many='group;subject;teacher_login;student_code;student_name\n'+Array.from({length:11},(_,i)=>`Новая;Английский;teacher.01;S${i};Ученик ${i}`).join('\n');
+ await assert.rejects(buildTransfer({kind:'csv',source:many,existing:existing(),users:[teacher]}),/10 учеников/);
+});
 test('CSV has deterministic IDs, accepts custom subjects and repeats without duplicates',async()=>{
  const e=existing(),original=structuredClone(e);const p=await buildTransfer({kind:'csv',source:csv,existing:e,users:[teacher]});assert.deepEqual(e,original);assert.equal(p.summary.newGroups,1);assert.equal(p.summary.newStudents,1);
  assert.equal((await buildTransfer({kind:'csv',source:csv,existing:e,users:[teacher]})).digest,p.digest);

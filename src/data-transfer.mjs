@@ -1,4 +1,5 @@
 import {assertSharedProfiles,profileKeys} from './student-directory.mjs';
+import {groupHistory,freezeLessons,centreDate} from './journal.mjs';
 import {parseGroupImport} from './group-import.mjs';
 import {studentRecord} from './student.mjs';
 import {duration,dateKey,validateLesson} from './model.mjs';
@@ -47,7 +48,10 @@ export async function buildTransfer({kind,source,existing,users,overwrite=false}
     else{target={...s,id:await idFor(['csv-student',group.id,s.code])};group.students.push(target);summary.newStudents++;}codeIds.set(s.code,target.id);
    }
    for(const slot of incoming.schedule){const oldSlot=group.schedule.find(s=>s.day===slot.day&&s.start===slot.start);if(oldSlot&&oldSlot.end!==slot.end)throw Error(`Разное время окончания в группе «${group.name}»`);if(oldSlot&&(oldSlot.repeat&&oldSlot.repeat!=='weekly'||oldSlot.effectiveFrom||oldSlot.effectiveTo||oldSlot.active===false))throw Error(`Время ${slot.start} в группе «${group.name}» имеет особые правила повторения. Измените его в карточке.`);if(!oldSlot)group.schedule.push(slot);}
-   validateGroup(group);put('groups',group);
+   if(group.students.length>Math.max(10,old?.students.length||0))throw Error('CSV: не больше 10 учеников в новой группе');
+   validateGroup(group);
+   const historical=groupHistory(old,{...group,frozenLessons:old?freezeLessons(old,existing.lessons,centreDate()):{}},centreDate());
+   put('groups',historical);
    for(const l of incoming.lessons){const attendance=Object.fromEntries(Object.entries(l.attendance).map(([code,mark])=>[codeIds.get(code),mark]));const same=lessons.find(x=>x.groupId===group.id&&x.date===l.date&&x.start===l.start);
     const value={...l,attendance,id:same?.id||await idFor(['csv-lesson',group.id,l.date,l.start]),groupId:group.id,teacherId:same?.teacherId??null,deleted:false};
     if(same){if(same.deleted||same.end!==l.end||same.status!==l.status||same.report!==l.report||Object.entries(attendance).some(([id,m])=>same.attendance?.[id]!==m))throw Error(`Занятие ${group.name} ${l.date} ${l.start} уже есть и отличается. Измените его в календаре.`);summary.skipped++;continue;}checkLesson(value,groups);put('lessons',value);
