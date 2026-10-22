@@ -181,7 +181,12 @@
 .student-directory .student-select-column{width:58px}
 .student-directory .student-name-column{width:28%}
 .student-directory .student-contact-column{width:23%}
-.student-directory .student-action-column{width:96px}
+.student-directory .student-action-column{width:112px}
+.student-directory-body>.student-collapse-toggle{display:flex;flex-direction:row;align-items:center;gap:8px;margin:0 0 12px;font-size:12px}
+.student-directory .student-collapse-toggle input{width:18px;height:18px;min-height:18px;margin:0;cursor:pointer}
+.student-name-match>tr:first-child{background:#1d292e}
+.student-match-detail{background:#121b24}
+.student-directory td.student-match-help{font-size:11px;color:#a8b9b4;line-height:1.6;background:#17232a}
 .student-directory th,.student-directory td{padding:9px 10px;overflow-wrap:anywhere;vertical-align:middle}
 .student-directory th{padding-top:10px;padding-bottom:10px}
 .student-directory td:first-child{text-align:center}
