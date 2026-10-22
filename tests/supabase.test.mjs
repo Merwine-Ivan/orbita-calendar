@@ -7,7 +7,7 @@ const gid='20000000-0000-4000-8000-000000000001',lid='30000000-0000-4000-8000-00
 const token=id=>`${btoa('{}')}.${btoa(JSON.stringify({sub:id,iat:2000}))}.signature`;
 function fixture({passwordError,defaultTemporaryPassword,profileUpdateError=false}={}){
  const profiles=[admin,teacher,other].map((id,i)=>({id,login:`user${i}`,name:`Person ${i}`,role:i?'teacher':'admin',disabled:false,must_change:false,invalid_before:0,subjects:['Английский']}));
- const tables={profiles,groups:[{id:gid,teacher_id:teacher,version:1,payload:{id:gid,name:'Тест',subject:'Английский',teacherId:teacher,students:[],schedule:[]}}],lessons:[],audit:[],imports:[]};
+ const tables={profiles,groups:[{id:gid,teacher_id:teacher,version:1,payload:{id:gid,name:'Тест',subject:'Английский',teacherId:teacher,students:[],schedule:[]}}],lessons:[],audit:[],imports:[],payments:[]};
  const calls=[];
  const fetchImpl=async(url,init={})=>{
   const u=new URL(url);calls.push({path:u.pathname,init});const respond=(data,status=200)=>new Response(JSON.stringify(data),{status});
@@ -15,6 +15,7 @@ function fixture({passwordError,defaultTemporaryPassword,profileUpdateError=fals
   if(u.pathname.startsWith('/auth/v1/admin/'))return respond({id:other});
   if(u.pathname==='/rest/v1/rpc/orbita_journal_backup')return respond({format:'orbita-journal',formatVersion:1,createdAt:'2026-10-19T00:00:00Z',groups:tables.groups.map(g=>({...g.payload,version:g.version})),lessons:tables.lessons.map(l=>({...l.payload,version:l.version})),users:tables.profiles.map(({id,name,login,role,subjects,disabled})=>({id,name,login,role,subjects,disabled}))});
   if(u.pathname==='/rest/v1/rpc/orbita_apply_transfer')return respond({...JSON.parse(init.body).p_summary,backupId:'50000000-0000-4000-8000-000000000001'});
+  if(u.pathname==='/rest/v1/rpc/orbita_record_payment'||u.pathname==='/rest/v1/rpc/orbita_purge_trash')return respond({ok:true});
   const table=u.pathname.split('orbita_')[1];if(!tables[table])throw Error('Unexpected request '+url);
   const rows=tables[table];const filter=row=>[...u.searchParams].every(([key,v])=>!v.startsWith('eq.')||String(row[key])===v.slice(3));
   const data=init.body?JSON.parse(init.body):undefined;
@@ -412,7 +413,7 @@ test('contact fields survive normal group edits and are hidden from unrelated te
  const unrelated=await(await req('bootstrap',other)).json();assert.deepEqual(unrelated.groups[0].students,[{id:student.id,name:student.name,personId:student.id}]);
  assert.equal((await(await req('bootstrap',teacher)).json()).groups[0].students[0].phone,student.phone);
  let group={...tables.groups[0].payload,version:1};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,200);assert.equal(tables.groups[0].payload.students[0].sourceStudentId,'legacy');
- group={...tables.groups[0].payload,version:2,students:[{...student,phone:'',age:''}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,400);const input={action:'update',personId:student.id,profile:{...student,phone:'',age:''}};const plan=await(await req('operations/students/preview',teacher,'POST',{input})).json();assert.equal(plan.profile.phone,undefined);assert.equal(plan.profile.age,undefined);assert.equal(plan.profile.guardianPhone,student.guardianPhone);
+ group={...tables.groups[0].payload,version:2,students:[{...student,phone:'',age:''}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,400);const input={action:'update',personId:student.id,profile:{...student,phone:'',age:''}};const plan=await(await req('operations/students/preview',admin,'POST',{input})).json();assert.equal(plan.profile.phone,undefined);assert.equal(plan.profile.age,undefined);assert.equal(plan.profile.guardianPhone,student.guardianPhone);
  group={...group,version:3,students:[{...student,age:999}]};assert.equal((await req(`groups/${gid}`,teacher,'PUT',group)).status,400);
 });
 
@@ -426,7 +427,7 @@ test('revoked subjects and deleted lesson overrides do not grant contact access'
 test('unified student operations are manager-only and linking cannot bypass group membership checks',async()=>{
  const {req,tables,calls}=fixture();tables.imports=[];const student={id:'60000000-0000-4000-8000-000000000001',name:'Первый',phone:'+79990000000'};tables.groups[0].payload.students=[student];
  const input={action:'update',personId:student.id,profile:{name:'Общее ФИО',phone:'+79990000001'}};
- assert.equal((await req('operations/students/preview',other,'POST',{input})).status,403);assert.equal((await req('operations/students/preview',teacher,'POST',{input})).status,200);
+ assert.equal((await req('operations/students/preview',other,'POST',{input})).status,403);assert.equal((await req('operations/students/preview',teacher,'POST',{input})).status,403);
  const preview=await req('operations/students/preview',admin,'POST',{input});assert.equal(preview.status,200);const plan=await preview.json();assert.equal(plan.summary.updatedGroups,1);assert.ok(!calls.some(c=>c.path.endsWith('/orbita_apply_transfer')));
  assert.equal((await req('operations/students/commit',admin,'POST',{input,digest:plan.digest,requestId:'50000000-0000-4000-8000-000000000002'})).status,200);
  const rpc=JSON.parse(calls.find(c=>c.path.endsWith('/orbita_apply_transfer')).init.body);assert.equal(rpc.p_kind,'students');assert.equal(rpc.p_changes.groups[0].payload.students[0].id,student.id);
@@ -457,4 +458,22 @@ test('adding an existing pupil uses a version-checked transaction and cannot be 
  assert.equal((await req(`groups/${g.id}`,teacher,'PUT',g)).status,403);
  assert.equal((await req(`groups/${g.id}`,admin,'PUT',g)).status,200);const body=JSON.parse(calls.find(c=>c.path.endsWith('/orbita_apply_transfer')).init.body);assert.equal(body.p_kind,'students');assert.equal(body.p_checks.groups[0].version,1);assert.equal(body.p_changes.groups[0].payload.students[0].personId,pupil.id);assert.equal(body.p_changes.groups[0].payload.students[0].id,g.students[0].id);
  assert.equal((await req('operations/students/preview',teacher,'POST',{input:{action:'link',personId:pupil.id,sourceIds:[pupil.id,g.students[0].id]}})).status,403);
+});
+
+test('payments are manager-write only and a teacher sees only own ledger',async()=>{
+ const {req,tables,calls}=fixture();tables.payments=[{id:'a',teacher_id:teacher},{id:'b',teacher_id:other}];
+ assert.equal((await(await req('payments',teacher)).json()).payments.length,1);
+ assert.equal((await(await req('payments',admin)).json()).payments.length,2);
+ const payment={id:lid,teacherId:teacher,month:'2026-10',subject:'Английский',lessonType:'group',minutes:540,note:'Аванс'};
+ assert.equal((await req('payments',teacher,'POST',payment)).status,403);
+ assert.equal((await req('payments',admin,'POST',{...payment,minutes:NaN})).status,400);
+ assert.equal((await req('payments',admin,'POST',payment)).status,200);
+ const body=JSON.parse(calls.find(c=>c.path.endsWith('orbita_record_payment')).init.body);assert.equal(body.p_actor,admin);assert.equal(body.p_minutes,540);
+});
+test('only owner may purge and a stale group projection cannot be saved',async()=>{
+ const {req,tables,calls}=fixture();const body={requestId:lid,items:[{table:'lessons',id:lid,version:1}]};
+ assert.equal((await req('trash/purge',admin,'POST',body)).status,403);
+ tables.profiles[0].role='owner';assert.equal((await req('trash/purge',admin,'POST',body)).status,200);assert.ok(calls.some(c=>c.path.endsWith('orbita_purge_trash')));
+ const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',status:'planned',attendance:{},report:'',virtual:true,groupVersion:0,version:0};
+ assert.equal((await req(`lessons/${lid}`,teacher,'PUT',lesson)).status,409);assert.equal(tables.lessons.length,0);
 });

@@ -26,6 +26,49 @@ function recurrence(groups, year, month, existing) {
   return out;
 }
 
+// src/journal.mjs
+var centreDate = (now = Date.now()) => new Date(now + 6 * 36e5).toISOString().slice(0, 10);
+function groupAt(group, date) {
+  const h = (group.history || []).find((h2) => (!h2.from || date >= h2.from) && date < h2.until);
+  return h ? { ...group, ...h, history: void 0 } : group;
+}
+var lessonGroup = (group, lesson) => lesson.snapshot || group.frozenLessons?.[lesson.id] ? { ...group, ...lesson.snapshot || group.frozenLessons[lesson.id] } : groupAt(group, lesson.date);
+function freezeLessons(group, lessons, today) {
+  const result = { ...group.frozenLessons || {} };
+  for (const l of lessons) if (l.groupId === group.id && !l.snapshot && !result[l.id] && (l.date <= today || l.status !== "planned" || l.report || Object.keys(l.attendance || {}).length)) {
+    const g = lessonGroup(group, l);
+    result[l.id] = { name: g.name, subject: g.subject, teacherId: g.teacherId, lessonType: g.lessonType, students: (g.students || []).map((s) => ({ id: s.id, name: s.name, personId: s.personId || s.id })) };
+  }
+  return result;
+}
+function groupHistory(previous, next, today) {
+  if (!previous) return { ...next, scheduleSince: today, history: [] };
+  const keys = ["name", "subject", "teacherId", "students", "schedule", "archived", "deleted", "lessonType"];
+  if (keys.every((k) => JSON.stringify(previous[k] ?? null) === JSON.stringify(next[k] ?? null))) return { ...next, history: previous.history || [], scheduleSince: previous.scheduleSince };
+  const history = [...previous.history || []];
+  if (!previous.scheduleSince || previous.scheduleSince < today) history.push({ from: previous.scheduleSince || null, until: today, ...Object.fromEntries(keys.map((k) => [k, previous[k] ?? null])) });
+  return { ...next, history, scheduleSince: today };
+}
+function calendarMonth(groups, saved, year, month, today = centreDate()) {
+  const prefix = dateKey(new Date(year, month, 1)).slice(0, 7), out = [];
+  for (const g of groups) {
+    const variants = [...(g.history || []).map((h) => ({ ...g, ...h })), { ...g, from: g.scheduleSince || null, until: null }];
+    const projected = [];
+    for (const variant of variants) {
+      if (variant.archived || variant.deleted) continue;
+      for (const l of recurrence([variant], year, month, [])) if ((!variant.from || l.date >= variant.from) && (!variant.until || l.date < variant.until) && (!(g.archived || g.deleted) || l.date < today)) projected.push({ ...l, id: `virtual:${g.id}:${l.date}:${l.start}`, virtual: true, groupVersion: g.version, teacherId: l.teacherId ?? variant.teacherId, snapshot: { name: variant.name, subject: variant.subject, teacherId: variant.teacherId, students: variant.students, lessonType: variant.lessonType } });
+    }
+    for (const l of saved.filter((l2) => l2.groupId === g.id && l2.date.startsWith(prefix))) {
+      const protectedRecord = l.status !== "planned" || l.report || Object.keys(l.attendance || {}).length || l.manual || l.date < today;
+      const matching = projected.find((p) => p.date === l.date && p.start === l.start);
+      const visible = protectedRecord && (!g.archived && !g.deleted || l.date < today || l.status === "done") || !g.archived && !g.deleted && (!g.scheduleSince || l.date < g.scheduleSince || matching);
+      if (!l.deleted && visible) out.push(!protectedRecord && matching && g.scheduleSince ? { ...l, end: matching.end, teacherId: matching.teacherId, snapshot: matching.snapshot } : l);
+    }
+    for (const l of projected) if (!saved.some((s) => s.groupId === g.id && s.date === l.date && s.start === l.start)) out.push(l);
+  }
+  return out;
+}
+
 // src/roles.mjs
 var isManager = (role) => role === "owner" || role === "admin";
 var canCreateAccount = (actor, role) => actor === "owner" && ["admin", "teacher"].includes(role) || actor === "admin" && role === "teacher";
@@ -569,7 +612,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       let b = {};
       if (!["GET", "HEAD"].includes(request.method)) {
         const raw = await request.text();
-        if (new TextEncoder().encode(raw).length > (route.startsWith("transfer/") ? 8e6 : 15e4)) fail("\u0417\u0430\u043F\u0440\u043E\u0441 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439", 413);
+        if (new TextEncoder().encode(raw).length > (route.startsWith("transfer/") || route === "trash/purge" ? 8e6 : 15e4)) fail("\u0417\u0430\u043F\u0440\u043E\u0441 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439", 413);
         try {
           b = JSON.parse(raw || "{}");
         } catch {
@@ -593,10 +636,30 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         return json({ ok: true });
       }
       if (p.must_change) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0437\u0430\u043C\u0435\u043D\u0438\u0442\u0435 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u044B\u0439 \u043F\u0430\u0440\u043E\u043B\u044C", 403);
+      if (route === "payments" && request.method === "GET") {
+        const rows = await all("payments", "at,id");
+        return json({ payments: isManager(p.role) ? rows : rows.filter((r) => r.teacher_id === p.id) });
+      }
+      if (route === "payments" && request.method === "POST") {
+        isAdmin();
+        if (!uuid3(b.id) || !uuid3(b.teacherId) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month) || typeof b.subject !== "string" || !b.subject.trim() || b.subject.length > 80 || !["group", "individual"].includes(b.lessonType) || !Number.isInteger(b.minutes) || !b.minutes || Math.abs(b.minutes) > 6e4 || typeof b.note !== "string" || b.note.length > 500) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043E\u043F\u043B\u0430\u0442\u0443: \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C, \u043C\u0435\u0441\u044F\u0446, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u0447\u0430\u0441\u044B");
+        const result = await backend("/rest/v1/rpc/orbita_record_payment", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_id: b.id, p_teacher: b.teacherId, p_month: b.month, p_subject: b.subject.trim(), p_type: b.lessonType, p_minutes: b.minutes, p_note: b.note.trim() } });
+        return json({ ok: true, payment: result });
+      }
+      if (route === "trash/purge" && request.method === "POST") {
+        if (p.role !== "owner") fail("\u041E\u043A\u043E\u043D\u0447\u0430\u0442\u0435\u043B\u044C\u043D\u043E\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
+        if (!uuid3(b.requestId) || !Array.isArray(b.items) || !b.items.length || b.items.length > 5e3) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438");
+        for (const i of b.items) {
+          if (!["groups", "lessons"].includes(i.table) || !uuid3(i.id) || !Number.isInteger(i.version) || i.version < 1) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438");
+          if (i.table === "groups" && (!Array.isArray(i.children) || i.children.some((c) => !uuid3(c.id) || !Number.isInteger(c.version)))) fail("\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u043A\u043E\u0440\u0437\u0438\u043D\u0443 \u043F\u0435\u0440\u0435\u0434 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435\u043C \u0433\u0440\u0443\u043F\u043F\u044B");
+        }
+        const result = await backend("/rest/v1/rpc/orbita_purge_trash", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_request: b.requestId, p_items: b.items } });
+        return json({ ok: true, ...result });
+      }
       const operation = route.match(/^operations\/(students|calendar)\/(preview|commit)$/);
       if (operation && request.method === "POST") {
         const [, kind, step] = operation;
-        if (kind === "students" && b.input?.action !== "update") isAdmin();
+        if (kind === "students") isAdmin();
         if (step === "commit") {
           if (!uuid3(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest)) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F");
           const saved = await one("imports", b.requestId);
@@ -643,7 +706,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       }
       if (route === "transfer/history" && request.method === "GET") {
         if (p.role !== "owner") fail("\u0418\u0441\u0442\u043E\u0440\u0438\u044F \u043A\u043E\u043F\u0438\u0439 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
-        const rows = await backend(query("imports", "source=in.(orbita-csv,orbita-restore,orbita-students,orbita-calendar)&order=at.desc&limit=20&select=id,at,source,summary"));
+        const rows = await backend(query("imports", "source=in.(orbita-csv,orbita-restore,orbita-students,orbita-calendar,orbita-purge)&order=at.desc&limit=20&select=id,at,source,summary"));
         return json({ entries: rows.map((r) => ({ id: r.id, at: r.at, source: r.source, summary: r.summary })) });
       }
       const savedCopy = route.match(/^transfer\/backups\/([0-9a-f-]+)$/i);
@@ -651,7 +714,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         if (p.role !== "owner") fail("\u0414\u043E\u0441\u0442\u0443\u043F \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
         if (!uuid3(savedCopy[1])) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         const saved = await one("imports", savedCopy[1]);
-        if (!saved || !["orbita-csv", "orbita-restore", "orbita-students", "orbita-calendar"].includes(saved.source)) fail("\u041A\u043E\u043F\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
+        if (!saved || !["orbita-csv", "orbita-restore", "orbita-students", "orbita-calendar", "orbita-purge"].includes(saved.source)) fail("\u041A\u043E\u043F\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
         await audit(p, "backup:journal", saved.id);
         return json(saved.snapshot);
       }
@@ -709,11 +772,11 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       if (route === "bootstrap" && request.method === "GET") {
         const [groups, lessons, profiles] = await Promise.all([all("groups", "id"), all("lessons", "date,start,id"), all("profiles", "name,id")]);
         const groupLookup = new Map(groups.map((g) => [g.id, g]));
-        return json({ groups: groups.map((r) => ({ ...r.payload, students: r.payload.students.map((s) => visibleStudent({ ...s, personId: personId(s) }, isManager(p.role) || canTeachGroup(p, { teacherId: r.teacher_id, subject: r.payload.subject, createdBy: r.payload.createdBy }) || canTeachGroup(p, { teacherId: p.id, subject: r.payload.subject, createdBy: r.payload.createdBy }) && (r.payload.schedule?.some((t) => t.teacherId === p.id && t.active !== false) || lessons.some((l) => !l.payload.deleted && l.group_id === r.id && l.payload.teacherId === p.id)))), version: r.version })), lessons: lessons.filter((r) => {
+        return json({ groups: groups.map((r) => ({ ...r.payload, history: (r.payload.history || []).map((h) => ({ ...h, students: (h.students || []).map((s) => visibleStudent(s, isManager(p.role))) })), students: r.payload.students.map((s) => visibleStudent({ ...s, personId: personId(s) }, isManager(p.role) || canTeachGroup(p, { teacherId: r.teacher_id, subject: r.payload.subject, createdBy: r.payload.createdBy }) || canTeachGroup(p, { teacherId: p.id, subject: r.payload.subject, createdBy: r.payload.createdBy }) && (r.payload.schedule?.some((t) => t.teacherId === p.id && t.active !== false) || lessons.some((l) => !l.payload.deleted && l.group_id === r.id && l.payload.teacherId === p.id)))), version: r.version })), lessons: lessons.filter((r) => {
           if (isManager(p.role) || !r.payload.deleted) return true;
           const g = groupLookup.get(r.group_id);
           return !!g && canTeachGroup(p, { teacherId: r.payload.teacherId ?? g.teacher_id, subject: g.payload.subject, createdBy: g.payload.createdBy });
-        }).map((r) => ({ ...r.payload, version: r.version })), users: profiles.map((profile) => ({ ...publicProfile(profile), ...isManager(p.role) || profile.id === p.id ? passwordStatus(profile) : {}, ...isManager(p.role) ? { lastSeenAt: profile.last_seen_at || null, online: !profile.disabled && Date.parse(profile.last_seen_at) <= now() && Date.parse(profile.last_seen_at) > now() - 9e4 } : {} })) });
+        }).map((r) => ({ ...r.payload, ...r.payload.snapshot ? { snapshot: { ...r.payload.snapshot, students: (r.payload.snapshot.students || []).map((s) => visibleStudent(s, false)) } } : {}, version: r.version })), users: profiles.map((profile) => ({ ...publicProfile(profile), ...isManager(p.role) || profile.id === p.id ? passwordStatus(profile) : {}, ...isManager(p.role) ? { lastSeenAt: profile.last_seen_at || null, online: !profile.disabled && Date.parse(profile.last_seen_at) <= now() && Date.parse(profile.last_seen_at) > now() - 9e4 } : {} })) });
       }
       const match = route.match(/^(groups|lessons)\/([0-9a-f-]+)$/i);
       if (match && request.method === "PUT") {
@@ -722,8 +785,12 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         let event = `save:${table}`;
         if (table === "groups") {
           const previous = await one("groups", id);
+          if (b.deleted !== void 0 && typeof b.deleted !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0433\u0440\u0443\u043F\u043F\u044B");
+          if (!isManager(p.role) && Boolean(b.deleted) !== Boolean(previous?.payload.deleted)) fail("\u0423\u0434\u0430\u043B\u044F\u0442\u044C \u0433\u0440\u0443\u043F\u043F\u044B \u043C\u043E\u0436\u0435\u0442 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
+          if (b.lessonType !== void 0 && !["group", "individual"].includes(b.lessonType)) fail("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0444\u043E\u0440\u043C\u0430\u0442 \u0437\u0430\u043D\u044F\u0442\u0438\u0439");
           if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 120 || typeof b.subject !== "string" || !b.subject.trim() || b.subject.trim().length > 80 || /[\x00-\x1f\x7f]/.test(b.subject) || b.teacherId != null && !uuid3(b.teacherId)) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F");
           const normalizedSubject = b.subject.trim();
+          if (Array.isArray(b.students) && b.students.length > Math.max(10, previous?.payload.students?.length || 0)) fail("\u041D\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 10 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0432 \u043D\u043E\u0432\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u0435");
           if (!Array.isArray(b.students) || b.students.length > 100 || !Array.isArray(b.schedule) || b.schedule.length > 20) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           if (b.students.some((s) => !s || typeof s !== "object") || b.schedule.some((s) => !s || typeof s !== "object")) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           for (const slot of b.schedule) if (slot.teacherId) {
@@ -783,7 +850,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
             }
           }
           if (Boolean(previous?.payload.archived) !== Boolean(b.archived)) event = b.archived ? "archive:groups" : "restore:groups";
-          const groupPayload = { ...previous?.payload || {}, id, name: b.name.trim(), subject: normalizedSubject, teacherId: b.teacherId || null, createdBy: previous?.payload.createdBy || (!isManager(p.role) ? p.id : null), students: b.students.map((s) => {
+          let groupPayload = { ...previous?.payload || {}, id, name: b.name.trim(), subject: normalizedSubject, teacherId: b.teacherId || null, createdBy: previous?.payload.createdBy || (!isManager(p.role) ? p.id : null), students: b.students.map((s) => {
             const old = previous?.payload.students?.find((x) => x.id === s.id) || {};
             const merged = { ...old, ...s };
             let normalized;
@@ -795,7 +862,12 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
             const result = { ...old, ...normalized, personId: s.personId || old.personId || s.id };
             for (const key of contactKeys) if (!(key in normalized)) delete result[key];
             return result;
-          }), schedule: b.schedule.map((s) => ({ day: s.day, start: s.start, end: s.end, ...s.id ? { id: s.id } : {}, effectiveFrom: s.effectiveFrom || null, effectiveTo: s.effectiveTo || null, ...s.repeat ? { repeat: s.repeat } : {}, active: s.active !== false, ...s.teacherId ? { teacherId: s.teacherId } : {} })), archived: Boolean(b.archived), version: b.version };
+          }), schedule: b.schedule.map((s) => ({ day: s.day, start: s.start, end: s.end, ...s.id ? { id: s.id } : {}, effectiveFrom: s.effectiveFrom || null, effectiveTo: s.effectiveTo || null, ...s.repeat ? { repeat: s.repeat } : {}, active: s.active !== false, ...s.teacherId ? { teacherId: s.teacherId } : {} })), archived: Boolean(b.archived) || Boolean(b.deleted), deleted: Boolean(b.deleted), lessonType: b.lessonType || previous?.payload.lessonType || (/индивидуал/i.test(b.name) ? "individual" : "group"), version: b.version };
+          if (previous) {
+            const records = await all("lessons", "id");
+            groupPayload.frozenLessons = freezeLessons(previous.payload, records.map((r) => r.payload), centreDate(now()));
+          }
+          groupPayload = groupHistory(previous?.payload, groupPayload, centreDate(now()));
           const linking = b.students.some((s) => s.personId && !previous?.payload.students?.some((old) => old.id === s.id));
           if (linking) {
             const ls = await all("lessons", "id");
@@ -813,10 +885,11 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           const g = await one("groups", b.groupId);
           if (!g) fail("\u0413\u0440\u0443\u043F\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430");
           const old = await one("lessons", id);
+          if (b.virtual && (!Number.isInteger(b.groupVersion) || b.groupVersion !== g.version)) fail("\u0420\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u043E\u0441\u044C. \u0417\u0430\u043A\u0440\u043E\u0439\u0442\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435 \u0438 \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0435\u0433\u043E \u0437\u0430\u043D\u043E\u0432\u043E.", 409);
           const shifted = !old || ["groupId", "date", "start", "end", "teacherId"].some((k) => (old.payload[k] ?? null) !== (b[k] ?? null)) || old.payload.status === "cancelled" && b.status !== "cancelled";
           if (shifted && b.confirmConflicts !== true) {
             const [allGroups, allLessons] = await Promise.all([all("groups", "id"), all("lessons", "id")]);
-            if (lessonConflicts(b, allLessons.map((r) => r.payload), allGroups.map((r) => r.payload)).length) fail("\u0415\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u0441\u0435\u0447\u0435\u043D\u0438\u044F \u0437\u0430\u043D\u044F\u0442\u0438\u0439. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0435\u043D\u0438\u0435 \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435.", 409);
+            if (lessonConflicts(b, calendarMonth(allGroups.map((r) => r.payload), allLessons.map((r) => r.payload), Number(b.date.slice(0, 4)), Number(b.date.slice(5, 7)) - 1, centreDate(now())).filter((l) => !(l.virtual && l.groupId === b.groupId && l.date === b.date && l.start === b.start)), allGroups.map((r) => r.payload)).length) fail("\u0415\u0441\u0442\u044C \u043F\u0435\u0440\u0435\u0441\u0435\u0447\u0435\u043D\u0438\u044F \u0437\u0430\u043D\u044F\u0442\u0438\u0439. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0435\u043D\u0438\u0435 \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435.", 409);
           }
           if (b.deleted !== void 0 && typeof b.deleted !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F");
           const changingDeletion = Boolean(b.deleted) !== Boolean(old?.payload.deleted);
@@ -838,8 +911,9 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           }
           if (g.payload.archived && (!old || old.group_id !== g.id)) fail("\u0413\u0440\u0443\u043F\u043F\u0430 \u0432 \u0430\u0440\u0445\u0438\u0432\u0435");
           if (!b.attendance || typeof b.attendance !== "object" || Array.isArray(b.attendance)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u044C");
-          for (const [sid, mark] of Object.entries(b.attendance)) if (!["present", "absent", "excused"].includes(mark) || !g.payload.students.some((s) => s.id === sid) && old?.payload.attendance?.[sid] !== mark) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043E\u0442\u043C\u0435\u0442\u043A\u0430");
-          await save(table, { ...old?.payload || {}, id, deleted: Boolean(b.deleted), teacherId: b.teacherId || null, groupId: b.groupId, date: b.date, start: b.start, end: b.end, status: b.status, report: b.report, attendance: b.attendance, version: b.version }, { group_id: b.groupId, date: b.date, start: b.start });
+          const historical = old?.payload.snapshot || lessonGroup(g.payload, old?.payload || b);
+          for (const [sid, mark] of Object.entries(b.attendance)) if (!["present", "absent", "excused"].includes(mark) || !(historical.students || []).some((s) => s.id === sid) && old?.payload.attendance?.[sid] !== mark) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043E\u0442\u043C\u0435\u0442\u043A\u0430");
+          await save(table, { ...old?.payload || {}, id, snapshot: old?.group_id === b.groupId && old.payload.snapshot ? old.payload.snapshot : { name: historical.name, subject: historical.subject, teacherId: historical.teacherId, lessonType: historical.lessonType, students: (historical.students || []).map((s) => ({ id: s.id, name: s.name, personId: s.personId || s.id })) }, manual: old?.payload.manual ?? !b.virtual, deleted: Boolean(b.deleted), teacherId: b.teacherId || null, groupId: b.groupId, date: b.date, start: b.start, end: b.end, status: b.status, report: b.report, attendance: b.attendance, version: b.version }, { group_id: b.groupId, date: b.date, start: b.start });
         }
         await audit(p, event, id);
         return json({ ok: true });
