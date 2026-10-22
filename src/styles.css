@@ -171,6 +171,29 @@
 .student-cards{display:grid;gap:10px}.student-card{border:1px solid var(--border,#303947);border-radius:12px;background:#131b26}.student-card summary{display:flex;align-items:center;gap:12px;padding:14px;cursor:pointer;list-style:none}.student-card summary>span:last-child{flex:1;min-width:0;overflow-wrap:anywhere}.student-card summary:after{content:'＋';color:#96d7be}.student-card[open] summary:after{content:'−'}.student-card small{display:block;color:#91a0b5;margin-top:5px;font-size:12px}.student-card-body{padding:0 14px 14px;display:grid;gap:12px}.student-card-body label{margin:0}.student-card-body .form-grid{gap:12px}
 .transfer-panel fieldset{border:0;padding:0;min-width:0;display:grid;gap:14px}.transfer-panel textarea{width:100%;box-sizing:border-box}.transfer-panel input[type=file]{max-width:100%;padding:10px;box-sizing:border-box}.transfer-list{max-height:300px;overflow:auto;margin:16px 0}.transfer-list>div{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid #293342;overflow-wrap:anywhere}.transfer-create{color:#95daba}.transfer-update{color:#ebc182}.check-line{display:flex!important;align-items:flex-start;gap:10px;margin:14px 0!important}.check-line input{width:18px;flex:none;margin:2px 0}.restore-box{margin:24px 0;border-top:1px solid #303947;padding:18px 0}.restore-box>summary{cursor:pointer;font-weight:600;padding:8px 0}.transfer-panel button{white-space:normal}.student-card:focus-within{border-color:#8acbb1}
 @media(max-width:600px){.student-card-body .form-grid{grid-template-columns:1fr}.transfer-list>div{align-items:flex-start;flex-direction:column}}
+/* Denser directory without changing student identities or shared-card actions. */
+.student-directory>.panel-heading{min-height:0;padding:14px 18px}
+.student-directory>.panel-heading .subtle{margin:7px 0 0;line-height:1.5}
+.student-directory .student-directory-body{padding:12px 18px 16px}
+.student-directory-body>label{margin:0 0 12px;gap:7px}
+.student-directory-body>label input{padding:9px 12px}
+.student-directory table{table-layout:fixed;min-width:660px}
+.student-directory .student-select-column{width:58px}
+.student-directory .student-name-column{width:28%}
+.student-directory .student-contact-column{width:23%}
+.student-directory .student-action-column{width:112px}
+.student-directory-body>.student-collapse-toggle{display:flex;flex-direction:row;align-items:center;gap:8px;margin:0 0 12px;font-size:12px}
+.student-directory .student-collapse-toggle input{width:18px;height:18px;min-height:18px;margin:0;cursor:pointer}
+.student-name-match>tr:first-child{background:#1d292e}
+.student-match-detail{background:#121b24}
+.student-directory td.student-match-help{font-size:11px;color:#a8b9b4;line-height:1.6;background:#17232a}
+.student-directory th,.student-directory td{padding:9px 10px;overflow-wrap:anywhere;vertical-align:middle}
+.student-directory th{padding-top:10px;padding-bottom:10px}
+.student-directory td:first-child{text-align:center}
+.student-directory td input[type=checkbox]{width:18px;height:18px;min-height:18px;margin:0;cursor:pointer}
+.student-directory td .presence-time{margin-top:2px;line-height:1.4}
+.student-directory td button{padding:7px 10px;min-height:32px;white-space:nowrap}
+@media(max-width:740px){.student-directory>.panel-heading{padding:12px}.student-directory .student-directory-body{padding:12px}.student-directory td button{min-height:44px}.student-directory td input[type=checkbox]{width:24px;height:24px;min-height:24px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 .linked-student-fields{border:0;padding:0;margin:0;min-width:0;display:grid;gap:12px}.linked-student-fields:disabled{opacity:.78}.student-operation{padding:18px;border:1px solid #3b5b53;border-radius:12px;margin:18px 0}.operation-preview{display:grid;gap:12px;margin:16px 0}.conflict-warning{padding:14px;border:1px solid #bd8a49;border-radius:12px;background:#382b1d;color:#f0d4aa;overflow-wrap:anywhere}.conflict-warning ul{padding-left:20px}.student-operation .student-card{margin:12px 0}.student-operation input[type=checkbox]{width:auto}.student-operation .transfer-list{margin:0}
 
