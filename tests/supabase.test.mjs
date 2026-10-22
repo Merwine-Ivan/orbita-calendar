@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHandler} from '../supabase/handler.mjs';
 import {createSupabaseApi} from '../src/supabase-api.mjs';
+import {verifyBackup} from '../src/backup-integrity.mjs';
 const admin='10000000-0000-4000-8000-000000000001',teacher='10000000-0000-4000-8000-000000000002',other='10000000-0000-4000-8000-000000000003';
 const gid='20000000-0000-4000-8000-000000000001',lid='30000000-0000-4000-8000-000000000001';
 const token=id=>`${btoa('{}')}.${btoa(JSON.stringify({sub:id,iat:2000}))}.signature`;
@@ -476,4 +477,22 @@ test('only owner may purge and a stale group projection cannot be saved',async()
  tables.profiles[0].role='owner';assert.equal((await req('trash/purge',admin,'POST',body)).status,200);assert.ok(calls.some(c=>c.path.endsWith('orbita_purge_trash')));
  const lesson={id:lid,groupId:gid,date:'2026-10-19',start:'09:00',end:'10:00',status:'planned',attendance:{},report:'',virtual:true,groupVersion:0,version:0};
  assert.equal((await req(`lessons/${lid}`,teacher,'PUT',lesson)).status,409);assert.equal(tables.lessons.length,0);
+});
+
+test('only owner can preview and restore a payment-only copy; preview writes nothing',async()=>{
+ const {req,tables,calls}=fixture();const pay={id:lid,at:'2026-10-22T05:00:00.123456Z',actor:admin,teacher_id:teacher,month:'2026-10',subject:'Английский',lesson_type:'group',minutes:540,note:'Аванс'};
+ const source=JSON.stringify({format:'orbita-journal',formatVersion:1,groups:[],lessons:[],users:tables.profiles,payments:[pay]});
+ assert.equal((await req('transfer/restore/preview',teacher,'POST',{source})).status,403);assert.equal((await req('transfer/restore/preview',admin,'POST',{source})).status,403);
+ tables.profiles[0].role='owner';const before=structuredClone(tables),preview=await(await req('transfer/restore/preview',admin,'POST',{source})).json();assert.equal(preview.summary.newPayments,1);assert.deepEqual(tables,before);
+ assert.equal((await req('transfer/restore/commit',admin,'POST',{source,digest:preview.digest,requestId:'50000000-0000-4000-8000-000000000009'})).status,200);
+ const rpc=JSON.parse(calls.find(c=>c.path.endsWith('orbita_apply_transfer')).init.body);assert.equal(rpc.p_changes.groups.length,0);assert.equal(rpc.p_changes.lessons.length,0);assert.equal(rpc.p_changes.payments[0].at,pay.at);assert.deepEqual(rpc.p_checks.payments,[]);
+});
+test('a payment added after preview invalidates a restore before any write',async()=>{
+ const {req,tables,calls}=fixture();tables.profiles[0].role='owner';const pay={id:lid,at:'2026-10-22T05:00:00.123456Z',actor:admin,teacher_id:teacher,month:'2026-10',subject:'Английский',lesson_type:'group',minutes:60,note:''};
+ const source=JSON.stringify({format:'orbita-journal',formatVersion:1,groups:[],lessons:[],users:tables.profiles,payments:[pay]}),preview=await(await req('transfer/restore/preview',admin,'POST',{source})).json();
+ tables.payments.push({...pay,id:gid});assert.equal((await req('transfer/restore/commit',admin,'POST',{source,digest:preview.digest,requestId:'50000000-0000-4000-8000-000000000010'})).status,409);assert.ok(!calls.some(c=>c.path.endsWith('orbita_apply_transfer')));
+});
+test('exported backup has a verifiable checksum without credential fields',async()=>{
+ const {req,tables}=fixture();tables.profiles[0].role='owner';const backup=await(await req('backup',admin)).json();assert.equal(await verifyBackup(backup),true);assert.ok(!JSON.stringify(backup).includes('server-secret'));
+ backup.groups[0].name='changed';await assert.rejects(verifyBackup(backup),/Контрольная сумма/);
 });
