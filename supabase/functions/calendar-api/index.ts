@@ -1,3 +1,27 @@
+// src/transfer-utils.mjs
+var uuid = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+var plain = (v) => v && typeof v === "object" && !Array.isArray(v);
+function stable(v) {
+  return JSON.stringify(v, function(k, x) {
+    return plain(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x;
+  });
+}
+async function digest(v) {
+  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(v))))].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// src/backup-integrity.mjs
+async function sealBackup(copy) {
+  const { integrity, ...content } = copy;
+  return { ...content, integrity: { algorithm: "SHA-256", value: await digest(content) } };
+}
+async function verifyBackup(copy) {
+  if (copy.integrity === void 0) return false;
+  const { integrity, ...content } = copy;
+  if (!integrity || integrity.algorithm !== "SHA-256" || !/^[a-f0-9]{64}$/.test(integrity.value) || await digest(content) !== integrity.value) throw Error("\u041A\u043E\u043D\u0442\u0440\u043E\u043B\u044C\u043D\u0430\u044F \u0441\u0443\u043C\u043C\u0430 \u043A\u043E\u043F\u0438\u0438 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442. \u0424\u0430\u0439\u043B \u043F\u043E\u0432\u0440\u0435\u0436\u0434\u0451\u043D \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0451\u043D; \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E.");
+  return true;
+}
+
 // src/model.mjs
 var subjects = ["\u0410\u043D\u0433\u043B\u0438\u0439\u0441\u043A\u0438\u0439", "\u041A\u0438\u0442\u0430\u0439\u0441\u043A\u0438\u0439", "\u041F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435"];
 var dateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -103,18 +127,6 @@ function visibleStudent(s, privateAccess) {
   return { id: s.id, name: s.name, ...s.personId ? { personId: s.personId } : {}, ...s.code ? { code: s.code } : {} };
 }
 
-// src/transfer-utils.mjs
-var uuid = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-var plain = (v) => v && typeof v === "object" && !Array.isArray(v);
-function stable(v) {
-  return JSON.stringify(v, function(k, x) {
-    return plain(x) ? Object.fromEntries(Object.keys(x).sort().map((key) => [key, x[key]])) : x;
-  });
-}
-async function digest(v) {
-  return [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(v))))].map((x) => x.toString(16).padStart(2, "0")).join("");
-}
-
 // src/student-directory.mjs
 var profileKeys = ["name", "phone", "guardianName", "guardianPhone", "age", "gender"];
 var personId = (s) => s.personId || s.id;
@@ -174,6 +186,36 @@ async function studentPlan({ groups, lessons, input }) {
   const summary = { newGroups: 0, updatedGroups: changes.groups.length, newStudents: 0, newLessons: 0, updatedLessons: 0, skipped: 0 };
   const warnings = input.action === "link" ? ["\u0411\u0443\u0434\u0443\u0442 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u043D\u044B \u0424\u0418\u041E \u0438 \u043A\u043E\u043D\u0442\u0430\u043A\u0442\u044B \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0439 \u043E\u0441\u043D\u043E\u0432\u043D\u043E\u0439 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0438. \u041A\u043E\u0434\u044B \u0432 \u0433\u0440\u0443\u043F\u043F\u0430\u0445, ID \u0437\u0430\u043F\u0438\u0441\u0435\u0439 \u0438 \u0432\u0441\u0435 \u043E\u0442\u043C\u0435\u0442\u043A\u0438 \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F. \u0418\u0441\u0445\u043E\u0434\u043D\u044B\u0435 \u0441\u0432\u0435\u0434\u0435\u043D\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0442\u0441\u044F \u0432 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438 \u043F\u0435\u0440\u0435\u0434 \u043E\u0431\u044A\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435\u043C."] : [];
   return { changes, checks, summary, details, warnings, profile, digest: await digest({ input, changes, checks }) };
+}
+
+// src/payment-backup.mjs
+var uuid2 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+function timestamp(value) {
+  const match = typeof value === "string" && value.match(/^(\d{4}-\d{2}-\d{2})T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.(\d{1,6}))?(Z|[+-](?:0\d|1[0-4]):[0-5]\d)$/);
+  if (!match || !Number.isFinite(Date.parse(value)) || (/* @__PURE__ */ new Date(`${match[1]}T12:00:00Z`)).toISOString().slice(0, 10) !== match[1]) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0434\u0430\u0442\u0430 \u043E\u043F\u043B\u0430\u0442\u044B \u0432 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438");
+  return new Date(value).toISOString().slice(0, 19) + "." + (match[3] || "").padEnd(6, "0") + "Z";
+}
+function paymentRecord(p) {
+  if (!p || typeof p !== "object" || !uuid2(p.id) || !uuid2(p.actor) || !uuid2(p.teacher_id) || typeof p.month !== "string" || !/^\d{4}-(0[1-9]|1[0-2])$/.test(p.month) || typeof p.subject !== "string" || !p.subject.trim() || p.subject.length > 80 || /[\x00-\x1f\x7f]/.test(p.subject) || !["group", "individual"].includes(p.lesson_type) || !Number.isInteger(p.minutes) || !p.minutes || Math.abs(p.minutes) > 6e4 || typeof p.note !== "string" || p.note.length > 500 || typeof p.at !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(p.at) || !Number.isFinite(Date.parse(p.at))) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0437\u0430\u043F\u0438\u0441\u044C \u043E\u043F\u043B\u0430\u0442\u044B \u0432 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438");
+  return { id: p.id, at: timestamp(p.at), actor: p.actor, teacher_id: p.teacher_id, month: p.month, subject: p.subject, lesson_type: p.lesson_type, minutes: p.minutes, note: p.note };
+}
+function restorePayments(incoming, existing, mapUser) {
+  if (!Array.isArray(incoming) || incoming.length > 1e4) throw Error("\u0412 \u043A\u043E\u043F\u0438\u0438 \u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F \u0441\u043F\u0438\u0441\u043E\u043A \u043E\u043F\u043B\u0430\u0442 (\u0434\u043E 10 000 \u0437\u0430\u043F\u0438\u0441\u0435\u0439)");
+  const current = new Map(existing.map((p) => [p.id, paymentRecord(p)])), seen = /* @__PURE__ */ new Set(), added = [];
+  let skipped = 0;
+  for (const raw of incoming) {
+    const row = paymentRecord(raw);
+    if (seen.has(row.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u043E\u043F\u043B\u0430\u0442\u044B \u0432 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u043E\u0439 \u043A\u043E\u043F\u0438\u0438");
+    seen.add(row.id);
+    row.actor = mapUser(row.actor);
+    row.teacher_id = mapUser(row.teacher_id);
+    const old = current.get(row.id);
+    if (old) {
+      if (JSON.stringify(old) !== JSON.stringify(row)) throw Error(`\u041E\u043F\u043B\u0430\u0442\u0430 ${row.id} \u0443\u0436\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u0435\u0442 \u0438 \u043E\u0442\u043B\u0438\u0447\u0430\u0435\u0442\u0441\u044F. \u0417\u0430\u043F\u0438\u0441\u0438 \u043E\u043F\u043B\u0430\u0442 \u043D\u0435 \u0437\u0430\u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F; \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442.`);
+      skipped++;
+    } else added.push(row);
+  }
+  return { added, skipped, checks: [...current.values()].sort((a, b) => a.id.localeCompare(b.id)) };
 }
 
 // src/group-import.mjs
@@ -289,7 +331,7 @@ function parseGroupImport(input) {
 }
 
 // src/data-transfer.mjs
-var uuid2 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+var uuid3 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 var plain2 = (v) => v && typeof v === "object" && !Array.isArray(v);
 var norm = (v) => v.trim().toLocaleLowerCase("ru-RU");
 function stable2(v) {
@@ -311,13 +353,43 @@ function equivalent(a, b) {
   };
   return stable2(clean(a)) === stable2(clean(b));
 }
+function validDate(d) {
+  return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) && dateKey(/* @__PURE__ */ new Date(`${d}T12:00:00`)) === d;
+}
+function validateSnapshot(s) {
+  if (!plain2(s) || typeof s.name !== "string" || !s.name.trim() || s.name.length > 120 || typeof s.subject !== "string" || !s.subject.trim() || s.subject.length > 80 || s.teacherId != null && !uuid3(s.teacherId) || s.lessonType != null && !["group", "individual"].includes(s.lessonType) || !Array.isArray(s.students) || s.students.length > 100) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0438\u0441\u0442\u043E\u0440\u0438\u044F \u0437\u0430\u043D\u044F\u0442\u0438\u044F \u0432 \u043A\u043E\u043F\u0438\u0438");
+  const ids = /* @__PURE__ */ new Set();
+  for (const pupil of s.students) {
+    studentRecord(pupil);
+    if (!uuid3(pupil.id) || ids.has(pupil.id) || pupil.personId != null && !uuid3(pupil.personId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0441\u043E\u0441\u0442\u0430\u0432 \u0438\u0441\u0442\u043E\u0440\u0438\u0447\u0435\u0441\u043A\u043E\u0433\u043E \u0437\u0430\u043D\u044F\u0442\u0438\u044F");
+    ids.add(pupil.id);
+  }
+}
+function mapSnapshot(s, mapUser) {
+  return { ...s, teacherId: mapUser(s.teacherId) };
+}
 function validateGroup(g, allowHistorical = false) {
-  if (!plain2(g) || !uuid2(g.id) || typeof g.name !== "string" || !g.name.trim() || g.name.length > 120 || typeof g.subject !== "string" || !g.subject.trim() || g.subject.length > 80 || /[\x00-\x1f\x7f]/.test(g.subject) || g.teacherId != null && !uuid2(g.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
+  if (!plain2(g) || !uuid3(g.id) || typeof g.name !== "string" || !g.name.trim() || g.name.length > 120 || typeof g.subject !== "string" || !g.subject.trim() || g.subject.length > 80 || /[\x00-\x1f\x7f]/.test(g.subject) || g.teacherId != null && !uuid3(g.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
   if (!Array.isArray(g.students) || g.students.length > 100 || !Array.isArray(g.schedule) || g.schedule.length > 20) throw Error("\u041D\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 100 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 20 \u0432\u0440\u0435\u043C\u0451\u043D \u0432 \u0433\u0440\u0443\u043F\u043F\u0435");
+  if (g.lessonType != null && !["group", "individual"].includes(g.lessonType) || g.scheduleSince != null && !validDate(g.scheduleSince) || g.archived != null && typeof g.archived !== "boolean" || g.deleted != null && typeof g.deleted !== "boolean") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u0433\u0440\u0443\u043F\u043F\u044B");
+  if (g.history !== void 0) {
+    if (!Array.isArray(g.history) || g.history.length > 1e3) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0438\u0441\u0442\u043E\u0440\u0438\u044F \u0433\u0440\u0443\u043F\u043F\u044B");
+    for (const h of g.history) {
+      if (!plain2(h) || !validDate(h.until) || h.from != null && (!validDate(h.from) || h.from > h.until)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0434\u0430\u0442\u044B \u0438\u0441\u0442\u043E\u0440\u0438\u0438 \u0433\u0440\u0443\u043F\u043F\u044B");
+      validateGroup({ ...g, ...h, history: void 0, frozenLessons: void 0 }, true);
+    }
+  }
+  if (g.frozenLessons !== void 0) {
+    if (!plain2(g.frozenLessons) || Object.keys(g.frozenLessons).length > 5e3) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0441\u043D\u0438\u043C\u043A\u0438 \u0437\u0430\u043D\u044F\u0442\u0438\u0439");
+    for (const [id, snapshot] of Object.entries(g.frozenLessons)) {
+      if (!uuid3(id)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0438\u0441\u0442\u043E\u0440\u0438\u0447\u0435\u0441\u043A\u043E\u0433\u043E \u0437\u0430\u043D\u044F\u0442\u0438\u044F");
+      validateSnapshot(snapshot);
+    }
+  }
   const ids = /* @__PURE__ */ new Set(), codes = /* @__PURE__ */ new Set();
   for (const s of g.students) {
     studentRecord(s);
-    if (!uuid2(s.id) || ids.has(s.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0438\u043B\u0438 \u043D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0443\u0447\u0435\u043D\u0438\u043A\u0430");
+    if (!uuid3(s.id) || ids.has(s.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0438\u043B\u0438 \u043D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0443\u0447\u0435\u043D\u0438\u043A\u0430");
     ids.add(s.id);
     if (s.code) {
       if (codes.has(s.code)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u043A\u043E\u0434\u0430 \u0443\u0447\u0435\u043D\u0438\u043A\u0430 \u0432 \u0433\u0440\u0443\u043F\u043F\u0435");
@@ -326,7 +398,7 @@ function validateGroup(g, allowHistorical = false) {
   }
   const slots = /* @__PURE__ */ new Set();
   for (const s of g.schedule) {
-    if (!plain2(s) || !Number.isInteger(s.day) || s.day < 0 || s.day > 6 || ![s.start, s.end].every((t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t)) || duration(s.start, s.end) <= 0 || s.teacherId != null && !uuid2(s.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
+    if (!plain2(s) || !Number.isInteger(s.day) || s.day < 0 || s.day > 6 || ![s.start, s.end].every((t) => typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t)) || duration(s.start, s.end) <= 0 || s.teacherId != null && !uuid3(s.teacherId)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
     for (const d of [s.effectiveFrom, s.effectiveTo]) if (d && (!/^\d{4}-\d{2}-\d{2}$/.test(d) || dateKey(/* @__PURE__ */ new Date(`${d}T12:00:00`)) !== d)) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0434\u0430\u0442\u0430 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
     if (!allowHistorical && s.effectiveFrom && s.effectiveTo && s.effectiveFrom > s.effectiveTo || s.repeat && !["weekly", "biweekly", "once"].includes(s.repeat) || ["biweekly", "once"].includes(s.repeat) && !s.effectiveFrom || s.repeat === "once" && (/* @__PURE__ */ new Date(`${s.effectiveFrom}T12:00:00`)).getDay() !== s.day) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u0435 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F");
     const key = [s.day, s.start, s.effectiveFrom || "", s.effectiveTo || ""].join("|");
@@ -335,16 +407,17 @@ function validateGroup(g, allowHistorical = false) {
   }
 }
 function checkLesson(l, groups) {
-  if (!plain2(l) || !uuid2(l.id) || !uuid2(l.groupId) || l.teacherId != null && !uuid2(l.teacherId) || l.deleted !== void 0 && typeof l.deleted !== "boolean") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435");
+  if (!plain2(l) || !uuid3(l.id) || !uuid3(l.groupId) || l.teacherId != null && !uuid3(l.teacherId) || l.deleted !== void 0 && typeof l.deleted !== "boolean") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0435");
   validateLesson(l);
   const g = groups.find((g2) => g2.id === l.groupId);
   if (!g) throw Error("\u0417\u0430\u043D\u044F\u0442\u0438\u0435 \u0441\u0441\u044B\u043B\u0430\u0435\u0442\u0441\u044F \u043D\u0430 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u044E\u0449\u0443\u044E \u0433\u0440\u0443\u043F\u043F\u0443");
-  if (!plain2(l.attendance) || Object.entries(l.attendance).some(([id, mark]) => !uuid2(id) || !["present", "absent", "excused"].includes(mark))) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u044C");
+  if (!plain2(l.attendance) || Object.entries(l.attendance).some(([id, mark]) => !uuid3(id) || !["present", "absent", "excused"].includes(mark))) throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u043F\u043E\u0441\u0435\u0449\u0430\u0435\u043C\u043E\u0441\u0442\u044C");
+  if (l.snapshot !== void 0) validateSnapshot(l.snapshot);
 }
 async function buildTransfer({ kind, source, existing, users, overwrite = false }) {
   if (!["csv", "restore"].includes(kind) || typeof source !== "string" || source.length > 5e6) throw Error("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u043E\u0440\u043C\u0430\u0442 \u0438 \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430 (\u0434\u043E 5 \u041C\u0411)");
-  const groups = structuredClone(existing.groups), lessons = structuredClone(existing.lessons), changes = { groups: [], lessons: [] }, details = [], warnings = [];
-  const summary = { newGroups: 0, updatedGroups: 0, newStudents: 0, newLessons: 0, updatedLessons: 0, skipped: 0 };
+  const groups = structuredClone(existing.groups), lessons = structuredClone(existing.lessons), changes = { groups: [], lessons: [], payments: [] }, details = [], warnings = [];
+  const summary = { newGroups: 0, updatedGroups: 0, newStudents: 0, newLessons: 0, updatedLessons: 0, newPayments: 0, skipped: 0 };
   function put(table, v) {
     const list = table === "groups" ? groups : lessons, old = list.find((x) => x.id === v.id);
     if (old && equivalent(old, v)) {
@@ -417,9 +490,10 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
       throw Error("\u0424\u0430\u0439\u043B \u043D\u0435 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 \u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 JSON");
     }
     if (copy?.format !== "orbita-journal" || copy.formatVersion !== 1 || !Array.isArray(copy.groups) || !Array.isArray(copy.lessons) || !Array.isArray(copy.users) || copy.groups.length > 1e3 || copy.lessons.length > 5e3 || copy.users.length > 500) throw Error("\u041D\u0443\u0436\u043D\u0430 \u0440\u0435\u0437\u0435\u0440\u0432\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F \u041E\u0440\u0431\u0438\u0442\u044B v1 (\u0434\u043E 1000 \u0433\u0440\u0443\u043F\u043F \u0438 5000 \u0437\u0430\u043D\u044F\u0442\u0438\u0439)");
+    if (!await verifyBackup(copy)) warnings.push("\u0421\u0442\u0430\u0440\u0430\u044F \u043A\u043E\u043F\u0438\u044F \u0431\u0435\u0437 \u043A\u043E\u043D\u0442\u0440\u043E\u043B\u044C\u043D\u043E\u0439 \u0441\u0443\u043C\u043C\u044B: \u0441\u0442\u0440\u0443\u043A\u0442\u0443\u0440\u0430 \u0438 \u0441\u0441\u044B\u043B\u043A\u0438 \u0431\u0443\u0434\u0443\u0442 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u044B, \u0446\u0435\u043B\u043E\u0441\u0442\u043D\u043E\u0441\u0442\u044C \u0438\u0441\u0445\u043E\u0434\u043D\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044C \u043D\u0435\u043B\u044C\u0437\u044F.");
     const groupIDs = /* @__PURE__ */ new Set(), lessonIDs = /* @__PURE__ */ new Set(), userIDs = /* @__PURE__ */ new Set();
     for (const u of copy.users) {
-      if (!plain2(u) || !uuid2(u.id) || userIDs.has(u.id) || typeof u.login !== "string") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0438 \u0432 \u043A\u043E\u043F\u0438\u0438");
+      if (!plain2(u) || !uuid3(u.id) || userIDs.has(u.id) || typeof u.login !== "string") throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0435 \u0441\u043E\u0442\u0440\u0443\u0434\u043D\u0438\u043A\u0438 \u0432 \u043A\u043E\u043F\u0438\u0438");
       userIDs.add(u.id);
     }
     const mapTeacher = (id) => {
@@ -431,12 +505,24 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
       if (mapped?.length === 1) return mapped[0].id;
       throw Error("\u0412 \u043A\u043E\u043F\u0438\u0438 \u0435\u0441\u0442\u044C \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0431\u0435\u0437 \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430 \u0432 \u044D\u0442\u043E\u043C \u0436\u0443\u0440\u043D\u0430\u043B\u0435. \u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u0434\u0430\u0439\u0442\u0435 \u0435\u043C\u0443 \u0434\u043E\u0441\u0442\u0443\u043F \u0441 \u043F\u0440\u0435\u0436\u043D\u0438\u043C \u043B\u043E\u0433\u0438\u043D\u043E\u043C.");
     };
+    if (copy.payments !== void 0) {
+      const payments = restorePayments(copy.payments, existing.payments || [], mapTeacher);
+      changes.payments = payments.added;
+      summary.newPayments = payments.added.length;
+      summary.skipped += payments.skipped;
+      details.push(...payments.added.map((p) => ({ type: "payments", action: "create", label: `\u041E\u043F\u043B\u0430\u0442\u0430 \xB7 ${users.find((u) => u.id === p.teacher_id)?.name || p.teacher_id} \xB7 ${p.month} \xB7 ${p.subject} \xB7 ${p.minutes / 60} \u0447` })));
+    } else warnings.push("\u0412 \u0441\u0442\u0430\u0440\u043E\u0439 \u043A\u043E\u043F\u0438\u0438 \u043D\u0435\u0442 \u0436\u0443\u0440\u043D\u0430\u043B\u0430 \u043E\u043F\u043B\u0430\u0442. \u0421\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0435 \u043E\u043F\u043B\u0430\u0442\u044B \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0442\u0441\u044F \u0431\u0435\u0437 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439.");
     for (const raw of copy.groups) {
       validateGroup(raw, true);
       if (groupIDs.has(raw.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u0433\u0440\u0443\u043F\u043F\u044B \u0432 \u043A\u043E\u043F\u0438\u0438");
       groupIDs.add(raw.id);
       const old = groups.find((g) => g.id === raw.id);
       let value = { ...old || {}, ...structuredClone(raw), teacherId: mapTeacher(raw.teacherId), createdBy: raw.createdBy ? mapTeacher(raw.createdBy) : null, schedule: raw.schedule.map((s) => ({ ...s, ...s.teacherId ? { teacherId: mapTeacher(s.teacherId) } : {} })) };
+      if (raw.history) value.history = raw.history.map((h) => {
+        const schedule = (h.schedule || []).map((slot) => ({ ...slot, ...slot.teacherId ? { teacherId: mapTeacher(slot.teacherId) } : {} }));
+        return { ...h, teacherId: mapTeacher(h.teacherId), schedule };
+      });
+      if (raw.frozenLessons) value.frozenLessons = Object.fromEntries(Object.entries(raw.frozenLessons).map(([id, snapshot]) => [id, mapSnapshot(snapshot, mapTeacher)]));
       if (old) {
         if (overwrite) {
           value.students = [...old.students.filter((s) => !raw.students.some((x) => x.id === s.id)), ...raw.students.map((s) => {
@@ -456,7 +542,7 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
       if (!plain2(raw) || lessonIDs.has(raw.id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u0437\u0430\u043D\u044F\u0442\u0438\u044F \u0432 \u043A\u043E\u043F\u0438\u0438");
       lessonIDs.add(raw.id);
       const old = lessons.find((l) => l.id === raw.id);
-      const value = { ...old || {}, ...structuredClone(raw), teacherId: mapTeacher(raw.teacherId) };
+      const value = { ...old || {}, ...structuredClone(raw), teacherId: mapTeacher(raw.teacherId), ...raw.snapshot ? { snapshot: mapSnapshot(raw.snapshot, mapTeacher) } : {} };
       checkLesson(value, groups);
       const slot = lessons.find((l) => l.id !== raw.id && l.groupId === raw.groupId && l.date === raw.date && l.start === raw.start);
       if (slot) throw Error(`\u0412\u0440\u0435\u043C\u044F ${raw.date} ${raw.start} \u0443\u0436\u0435 \u0437\u0430\u043D\u044F\u0442\u043E \u0434\u0440\u0443\u0433\u0438\u043C ID. \u0410\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0435 \u043E\u0431\u044A\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E.`);
@@ -466,11 +552,12 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
       }
       put("lessons", value);
     }
-    warnings.push("\u0423\u0447\u0451\u0442\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438 \u0438 \u043F\u0430\u0440\u043E\u043B\u0438 \u043D\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u044E\u0442\u0441\u044F. \u0417\u0430\u043F\u0438\u0441\u0438, \u043A\u043E\u0442\u043E\u0440\u044B\u0445 \u043D\u0435\u0442 \u0432 \u0444\u0430\u0439\u043B\u0435, \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F. \u041B\u0438\u0448\u043D\u0438\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u0438 \u0432 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0445 \u0433\u0440\u0443\u043F\u043F\u0430\u0445 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F.");
+    warnings.push("\u0423\u0447\u0451\u0442\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438 \u0438 \u043F\u0430\u0440\u043E\u043B\u0438 \u043D\u0435 \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u044E\u0442\u0441\u044F. \u0417\u0430\u043F\u0438\u0441\u0438, \u043A\u043E\u0442\u043E\u0440\u044B\u0445 \u043D\u0435\u0442 \u0432 \u0444\u0430\u0439\u043B\u0435, \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F. \u041E\u043F\u043B\u0430\u0442\u044B \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u044E\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u043C ID, \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u044E\u0449\u0438\u0435 \u0437\u0430\u043F\u0438\u0441\u0438 \u043D\u0435 \u0437\u0430\u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F \u0434\u0430\u0436\u0435 \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \u0437\u0430\u043C\u0435\u043D\u044B \u0433\u0440\u0443\u043F\u043F \u0438 \u0437\u0430\u043D\u044F\u0442\u0438\u0439.");
   }
   assertSharedProfiles(groups);
   if (changes.groups.length > 1e3 || changes.lessons.length > 5e3) throw Error("\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u0437\u0430\u043F\u0438\u0441\u0435\u0439 \u0437\u0430 \u043E\u0434\u043D\u0443 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044E");
   const checks = { groups: existing.groups.map((g) => ({ id: g.id, version: g.version })), lessons: existing.lessons.map((l) => ({ id: l.id, version: l.version })) };
+  if (kind === "restore") checks.payments = restorePayments([], existing.payments || [], (id) => id).checks;
   return { changes, checks, summary, details, warnings, digest: await digest2({ kind, source, overwrite, changes, checks }) };
 }
 
@@ -523,7 +610,7 @@ function batchConflicts(lessons, existing, groups) {
 }
 
 // supabase/handler.mjs
-var uuid3 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+var uuid4 = (v) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 var publicProfile = (p) => ({ id: p.id, login: p.login, name: p.name, role: p.role, disabled: p.disabled, mustChange: p.must_change, subjects: p.subjects || [] });
 var passwordStatus = (p) => ({ passwordChangedAt: p.password_changed_at || null, temporaryPasswordAt: p.temporary_password_at || null });
 function fail(message, status = 400) {
@@ -579,7 +666,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
     await backend(query("audit"), { method: "POST", body: { actor: p.id, action, target } });
   }
   async function save(table, payload, metadata) {
-    if (!uuid3(payload.id) || !Number.isInteger(payload.version) || payload.version < 0) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0438\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u044F");
+    if (!uuid4(payload.id) || !Number.isInteger(payload.version) || payload.version < 0) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID \u0438\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u044F");
     const record = { ...metadata, payload, version: payload.version + 1 };
     if (payload.version === 0) {
       await backend(query(table), { method: "POST", body: { id: payload.id, ...record } });
@@ -614,7 +701,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       let b = {};
       if (!["GET", "HEAD"].includes(request.method)) {
         const raw = await request.text();
-        if (new TextEncoder().encode(raw).length > (route.startsWith("transfer/") || route === "trash/purge" ? 8e6 : 15e4)) fail("\u0417\u0430\u043F\u0440\u043E\u0441 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439", 413);
+        if (new TextEncoder().encode(raw).length > (route.startsWith("transfer/") ? 12e6 : route === "trash/purge" ? 8e6 : 15e4)) fail("\u0417\u0430\u043F\u0440\u043E\u0441 \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0431\u043E\u043B\u044C\u0448\u043E\u0439", 413);
         try {
           b = JSON.parse(raw || "{}");
         } catch {
@@ -644,16 +731,16 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       }
       if (route === "payments" && request.method === "POST") {
         isAdmin();
-        if (!uuid3(b.id) || !uuid3(b.teacherId) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month) || typeof b.subject !== "string" || !b.subject.trim() || b.subject.length > 80 || !["group", "individual"].includes(b.lessonType) || !Number.isInteger(b.minutes) || !b.minutes || Math.abs(b.minutes) > 6e4 || typeof b.note !== "string" || b.note.length > 500) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043E\u043F\u043B\u0430\u0442\u0443: \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C, \u043C\u0435\u0441\u044F\u0446, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u0447\u0430\u0441\u044B");
+        if (!uuid4(b.id) || !uuid4(b.teacherId) || !/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month) || typeof b.subject !== "string" || !b.subject.trim() || b.subject.length > 80 || /[\x00-\x1f\x7f]/.test(b.subject) || !["group", "individual"].includes(b.lessonType) || !Number.isInteger(b.minutes) || !b.minutes || Math.abs(b.minutes) > 6e4 || typeof b.note !== "string" || b.note.length > 500) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043E\u043F\u043B\u0430\u0442\u0443: \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C, \u043C\u0435\u0441\u044F\u0446, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u0447\u0430\u0441\u044B");
         const result = await backend("/rest/v1/rpc/orbita_record_payment", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_id: b.id, p_teacher: b.teacherId, p_month: b.month, p_subject: b.subject.trim(), p_type: b.lessonType, p_minutes: b.minutes, p_note: b.note.trim() } });
         return json({ ok: true, payment: result });
       }
       if (route === "trash/purge" && request.method === "POST") {
         if (p.role !== "owner") fail("\u041E\u043A\u043E\u043D\u0447\u0430\u0442\u0435\u043B\u044C\u043D\u043E\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
-        if (!uuid3(b.requestId) || !Array.isArray(b.items) || !b.items.length || b.items.length > 5e3) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438");
+        if (!uuid4(b.requestId) || !Array.isArray(b.items) || !b.items.length || b.items.length > 5e3) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438");
         for (const i of b.items) {
-          if (!["groups", "lessons"].includes(i.table) || !uuid3(i.id) || !Number.isInteger(i.version) || i.version < 1) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438");
-          if (i.table === "groups" && (!Array.isArray(i.children) || i.children.some((c) => !uuid3(c.id) || !Number.isInteger(c.version)))) fail("\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u043A\u043E\u0440\u0437\u0438\u043D\u0443 \u043F\u0435\u0440\u0435\u0434 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435\u043C \u0433\u0440\u0443\u043F\u043F\u044B");
+          if (!["groups", "lessons"].includes(i.table) || !uuid4(i.id) || !Number.isInteger(i.version) || i.version < 1) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0435 \u0437\u0430\u043F\u0438\u0441\u0438");
+          if (i.table === "groups" && (!Array.isArray(i.children) || i.children.some((c) => !uuid4(c.id) || !Number.isInteger(c.version)))) fail("\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u043A\u043E\u0440\u0437\u0438\u043D\u0443 \u043F\u0435\u0440\u0435\u0434 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435\u043C \u0433\u0440\u0443\u043F\u043F\u044B");
         }
         const result = await backend("/rest/v1/rpc/orbita_purge_trash", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_request: b.requestId, p_items: b.items } });
         return json({ ok: true, ...result });
@@ -663,7 +750,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         const [, kind, step] = operation;
         if (kind === "students") isAdmin();
         if (step === "commit") {
-          if (!uuid3(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest)) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F");
+          if (!uuid4(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest)) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F");
           const saved = await one("imports", b.requestId);
           if (saved) {
             if (saved.summary?.actor !== p.id || saved.summary?.digest !== b.digest) fail("ID \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438 \u0443\u0436\u0435 \u0437\u0430\u043D\u044F\u0442", 409);
@@ -702,7 +789,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         if (step === "preview") return json({ digest: plan.digest, summary: plan.summary, details: plan.details, warnings: plan.warnings, profile: plan.profile, conflicts: plan.conflicts || [] });
         if (b.digest !== plan.digest) fail("\u0414\u0430\u043D\u043D\u044B\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0438\u0441\u044C. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440.", 409);
         if (plan.conflicts?.length && b.confirmConflicts !== true) fail("\u041F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u0435 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u0437\u0430\u043D\u044F\u0442\u0438\u0439 \u0441 \u043F\u0435\u0440\u0435\u0441\u0435\u0447\u0435\u043D\u0438\u044F\u043C\u0438", 409);
-        if (!plan.changes.groups.length && !plan.changes.lessons.length) return json({ ok: true, summary: plan.summary });
+        if (!plan.changes.groups.length && !plan.changes.lessons.length && !plan.changes.payments?.length) return json({ ok: true, summary: plan.summary });
         const summary = await backend("/rest/v1/rpc/orbita_apply_transfer", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_kind: kind, p_request: b.requestId, p_digest: plan.digest, p_changes: plan.changes, p_checks: plan.checks, p_summary: plan.summary } });
         return json({ ok: true, summary });
       }
@@ -714,11 +801,11 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       const savedCopy = route.match(/^transfer\/backups\/([0-9a-f-]+)$/i);
       if (savedCopy && request.method === "GET") {
         if (p.role !== "owner") fail("\u0414\u043E\u0441\u0442\u0443\u043F \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
-        if (!uuid3(savedCopy[1])) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
+        if (!uuid4(savedCopy[1])) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         const saved = await one("imports", savedCopy[1]);
         if (!saved || !["orbita-csv", "orbita-restore", "orbita-students", "orbita-calendar", "orbita-purge"].includes(saved.source)) fail("\u041A\u043E\u043F\u0438\u044F \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430", 404);
         await audit(p, "backup:journal", saved.id);
-        return json(saved.snapshot);
+        return json(await sealBackup(saved.snapshot));
       }
       const transfer = route.match(/^transfer\/(csv|restore)\/(preview|commit)$/);
       if (transfer && request.method === "POST") {
@@ -726,7 +813,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         const [, kind, step] = transfer;
         if (kind === "restore" && p.role !== "owner") fail("\u0412\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
         if (b.overwrite !== void 0 && typeof b.overwrite !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0440\u0435\u0436\u0438\u043C \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F");
-        if (step === "commit" && (!uuid3(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest))) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B");
+        if (step === "commit" && (!uuid4(b.requestId) || typeof b.digest !== "string" || !/^[a-f0-9]{64}$/.test(b.digest))) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B");
         if (step === "commit") {
           const applied = await one("imports", b.requestId);
           if (applied) {
@@ -734,8 +821,8 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
             return json({ ok: true, summary: applied.summary });
           }
         }
-        const [gs, ls, profiles] = await Promise.all([all("groups", "id"), all("lessons", "id"), all("profiles", "id")]);
-        const existing = { groups: gs.map((r) => ({ ...r.payload, version: r.version })), lessons: ls.map((r) => ({ ...r.payload, version: r.version })) };
+        const [gs, ls, profiles, payments] = await Promise.all([all("groups", "id"), all("lessons", "id"), all("profiles", "id"), kind === "restore" ? all("payments", "id") : Promise.resolve([])]);
+        const existing = { groups: gs.map((r) => ({ ...r.payload, version: r.version })), lessons: ls.map((r) => ({ ...r.payload, version: r.version })), payments };
         let plan;
         try {
           plan = await buildTransfer({ kind, source: b.source, overwrite: b.overwrite === true, existing, users: profiles });
@@ -748,7 +835,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         }
         if (step === "preview") return json({ digest: plan.digest, summary: plan.summary, details: plan.details, warnings: plan.warnings });
         if (plan.digest !== b.digest) fail("\u0414\u0430\u043D\u043D\u044B\u0435 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0438\u0441\u044C \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u0435\u0434\u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440\u0430. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B \u0437\u0430\u043D\u043E\u0432\u043E.", 409);
-        if (!plan.changes.groups.length && !plan.changes.lessons.length) return json({ ok: true, summary: plan.summary });
+        if (!plan.changes.groups.length && !plan.changes.lessons.length && !plan.changes.payments?.length) return json({ ok: true, summary: plan.summary });
         const summary = await backend("/rest/v1/rpc/orbita_apply_transfer", { method: "POST", body: { p_actor: p.id, p_iat: claims.iat, p_kind: kind, p_request: b.requestId, p_digest: plan.digest, p_changes: plan.changes, p_checks: plan.checks, p_summary: plan.summary } });
         return json({ ok: true, summary });
       }
@@ -756,7 +843,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
         if (p.role !== "owner") fail("\u0420\u0435\u0437\u0435\u0440\u0432\u043D\u0430\u044F \u043A\u043E\u043F\u0438\u044F \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 \u0442\u043E\u043B\u044C\u043A\u043E \u0433\u043B\u0430\u0432\u043D\u043E\u043C\u0443 admin", 403);
         const snapshot = await backend("/rest/v1/rpc/orbita_journal_backup", { method: "POST", body: {} });
         await audit(p, "backup:journal", "journal");
-        return json(snapshot);
+        return json(await sealBackup(snapshot));
       }
       if (route === "presence" && request.method === "POST") {
         await backend(query("profiles", `id=eq.${p.id}`), { method: "PATCH", body: { last_seen_at: new Date(now()).toISOString() } });
@@ -783,20 +870,20 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       const match = route.match(/^(groups|lessons)\/([0-9a-f-]+)$/i);
       if (match && request.method === "PUT") {
         const [_, table, id] = match;
-        if (!uuid3(id) || b.id !== id) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
+        if (!uuid4(id) || b.id !== id) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         let event = `save:${table}`;
         if (table === "groups") {
           const previous = await one("groups", id);
           if (b.deleted !== void 0 && typeof b.deleted !== "boolean") fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0433\u0440\u0443\u043F\u043F\u044B");
           if (!isManager(p.role) && Boolean(b.deleted) !== Boolean(previous?.payload.deleted)) fail("\u0423\u0434\u0430\u043B\u044F\u0442\u044C \u0433\u0440\u0443\u043F\u043F\u044B \u043C\u043E\u0436\u0435\u0442 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
           if (b.lessonType !== void 0 && !["group", "individual"].includes(b.lessonType)) fail("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0444\u043E\u0440\u043C\u0430\u0442 \u0437\u0430\u043D\u044F\u0442\u0438\u0439");
-          if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 120 || typeof b.subject !== "string" || !b.subject.trim() || b.subject.trim().length > 80 || /[\x00-\x1f\x7f]/.test(b.subject) || b.teacherId != null && !uuid3(b.teacherId)) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F");
+          if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 120 || typeof b.subject !== "string" || !b.subject.trim() || b.subject.trim().length > 80 || /[\x00-\x1f\x7f]/.test(b.subject) || b.teacherId != null && !uuid4(b.teacherId)) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0438 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F");
           const normalizedSubject = b.subject.trim();
           if (Array.isArray(b.students) && b.students.length > Math.max(10, previous?.payload.students?.length || 0)) fail("\u041D\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 10 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0432 \u043D\u043E\u0432\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u0435");
           if (!Array.isArray(b.students) || b.students.length > 100 || !Array.isArray(b.schedule) || b.schedule.length > 20) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           if (b.students.some((s) => !s || typeof s !== "object") || b.schedule.some((s) => !s || typeof s !== "object")) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           for (const slot of b.schedule) if (slot.teacherId) {
-            if (!uuid3(slot.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438");
+            if (!uuid4(slot.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0432 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0438");
             if (isManager(p.role)) {
               const t2 = await one("profiles", slot.teacherId);
               if (!t2 || t2.disabled) fail("\u041F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
@@ -823,7 +910,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           if (!Array.isArray(b.students) || b.students.length > 100 || !Array.isArray(b.schedule) || b.schedule.length > 20) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0438 \u0440\u0430\u0441\u043F\u0438\u0441\u0430\u043D\u0438\u0435");
           const ids = /* @__PURE__ */ new Set();
           for (const s of b.students) {
-            if (!uuid3(s.id) || ids.has(s.id) || typeof s.name !== "string" || !s.name.trim() || s.name.length > 240) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432");
+            if (!uuid4(s.id) || ids.has(s.id) || typeof s.name !== "string" || !s.name.trim() || s.name.length > 240) fail("\u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432");
             ids.add(s.id);
           }
           const slots = /* @__PURE__ */ new Set();
@@ -844,7 +931,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
               const old = previous?.payload.students?.find((x) => x.id === s.id);
               const pid = s.personId || old?.personId || old?.id;
               if (!pid) continue;
-              if (!uuid3(pid) || old && personId(old) !== pid) fail("\u0421\u0432\u044F\u0437\u0438 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0423\u0447\u0435\u043D\u0438\u043A\u0438\xBB");
+              if (!uuid4(pid) || old && personId(old) !== pid) fail("\u0421\u0432\u044F\u0437\u0438 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0423\u0447\u0435\u043D\u0438\u043A\u0438\xBB");
               if (!old && !isManager(p.role)) fail("\u0421\u0432\u044F\u0437\u044B\u0432\u0430\u0442\u044C \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u043C\u043E\u0436\u0435\u0442 \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
               const canonical = common.flatMap((g) => g.payload.students).find((x) => personId(x) === pid);
               if (!canonical || !sameProfile(canonical, s)) fail("\u041E\u0431\u0449\u0438\u0435 \u0424\u0418\u041E \u0438 \u043A\u043E\u043D\u0442\u0430\u043A\u0442\u044B \u043C\u0435\u043D\u044F\u044E\u0442\u0441\u044F \u0432 \u0440\u0430\u0437\u0434\u0435\u043B\u0435 \xAB\u0423\u0447\u0435\u043D\u0438\u043A\u0438\xBB");
@@ -883,7 +970,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           } catch (e) {
             fail(e.message);
           }
-          if (!uuid3(b.groupId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
+          if (!uuid4(b.groupId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0433\u0440\u0443\u043F\u043F\u0430");
           const g = await one("groups", b.groupId);
           if (!g) fail("\u0413\u0440\u0443\u043F\u043F\u0430 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430");
           const old = await one("lessons", id);
@@ -906,7 +993,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
           if (!permitted(g, b) || old && !permitted(await one("groups", old.group_id), old.payload)) fail("\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043C\u043E\u0436\u043D\u043E \u0442\u043E\u043B\u044C\u043A\u043E \u0441\u0432\u043E\u0438 \u0433\u0440\u0443\u043F\u043F\u044B \u043F\u043E \u0440\u0430\u0437\u0440\u0435\u0448\u0451\u043D\u043D\u044B\u043C \u043F\u0440\u0435\u0434\u043C\u0435\u0442\u0430\u043C", 403);
           if (!isManager(p.role) && (b.teacherId ?? null) !== (old?.payload.teacherId ?? null) && !(!old && b.teacherId === p.id && g.teacher_id === p.id)) fail("\u041D\u0430\u0437\u043D\u0430\u0447\u0430\u0442\u044C \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044F \u043C\u043E\u0436\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0430\u0434\u043C\u0438\u043D\u0438\u0441\u0442\u0440\u0430\u0442\u043E\u0440", 403);
           if (b.teacherId && (!old || b.teacherId !== old.payload.teacherId || b.groupId !== old.group_id)) {
-            if (!uuid3(b.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C");
+            if (!uuid4(b.teacherId)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C");
             const t = await one("profiles", b.teacherId);
             if (!t || t.disabled) fail("\u041F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
             if (!isManager(t.role) && subjects.includes(g.payload.subject) && !t.subjects?.includes(g.payload.subject) && g.payload.createdBy !== t.id) fail("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0440\u0430\u0437\u0440\u0435\u0448\u0438\u0442\u0435 \u043F\u0440\u0435\u043F\u043E\u0434\u0430\u0432\u0430\u0442\u0435\u043B\u044E \u044D\u0442\u043E\u0442 \u043F\u0440\u0435\u0434\u043C\u0435\u0442 \u0432 \u0435\u0433\u043E \u043F\u0440\u043E\u0444\u0438\u043B\u0435");
@@ -942,7 +1029,7 @@ function createHandler({ url, serviceKey, allowedOrigins, defaultTemporaryPasswo
       const account = route.match(/^users\/([0-9a-f-]+)(\/(?:password|profile))?$/i);
       if (account) {
         const id = account[1];
-        if (!uuid3(id)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
+        if (!uuid4(id)) fail("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 ID");
         const target = await one("profiles", id);
         if (!target) fail("\u041F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u0435\u043B\u044C \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D", 404);
         if (account[2] === "/profile" && request.method === "PATCH") {

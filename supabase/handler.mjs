@@ -1,3 +1,4 @@
+import {sealBackup} from '../src/backup-integrity.mjs';
 import {groupHistory,freezeLessons,groupAt,lessonGroup,calendarMonth,centreDate} from '../src/journal.mjs';
 import {subjects,validateLesson,duration,dateKey} from '../src/model.mjs';
 import {isManager,canCreateAccount,canManageAccount,canTeachGroup} from '../src/roles.mjs';
@@ -55,7 +56,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
    if(!Number.isFinite(claims.iat)||claims.iat<=p.invalid_before)fail('Доступ обновлён администратором. Войдите заново.',401);
    const route=new URL(request.url).pathname.split('/calendar-api/')[1]||'';
    const isAdmin=()=>{if(!isManager(p.role))fail('Доступ только для администратора',403);};
-   let b={};if(!['GET','HEAD'].includes(request.method)){const raw=await request.text();if(new TextEncoder().encode(raw).length>(route.startsWith('transfer/')||route==='trash/purge'?8000000:150000))fail('Запрос слишком большой',413);try{b=JSON.parse(raw||'{}');}catch{fail('Некорректный JSON');}if(!b||typeof b!=='object'||Array.isArray(b))fail('Ожидается объект JSON');}
+   let b={};if(!['GET','HEAD'].includes(request.method)){const raw=await request.text();if(new TextEncoder().encode(raw).length>(route.startsWith('transfer/')?12000000:route==='trash/purge'?8000000:150000))fail('Запрос слишком большой',413);try{b=JSON.parse(raw||'{}');}catch{fail('Некорректный JSON');}if(!b||typeof b!=='object'||Array.isArray(b))fail('Ожидается объект JSON');}
    if(route==='session'&&request.method==='GET')return json({demo:false,vkOnly:false,user:{...publicProfile(p),...passwordStatus(p)}});
    if(route==='password'&&request.method==='POST'){
     passwordCheck(b.password);await backend('/auth/v1/user',{method:'PUT',token,body:{password:b.password}});
@@ -72,7 +73,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
     const rows=await all('payments','at,id');return json({payments:isManager(p.role)?rows:rows.filter(r=>r.teacher_id===p.id)});
    }
    if(route==='payments'&&request.method==='POST'){
-    isAdmin();if(!uuid(b.id)||!uuid(b.teacherId)||!/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month)||typeof b.subject!=='string'||!b.subject.trim()||b.subject.length>80||!['group','individual'].includes(b.lessonType)||!Number.isInteger(b.minutes)||!b.minutes||Math.abs(b.minutes)>60000||typeof b.note!=='string'||b.note.length>500)fail('Проверьте оплату: преподаватель, месяц, предмет и часы');
+    isAdmin();if(!uuid(b.id)||!uuid(b.teacherId)||!/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month)||typeof b.subject!=='string'||!b.subject.trim()||b.subject.length>80||/[\x00-\x1f\x7f]/.test(b.subject)||!['group','individual'].includes(b.lessonType)||!Number.isInteger(b.minutes)||!b.minutes||Math.abs(b.minutes)>60000||typeof b.note!=='string'||b.note.length>500)fail('Проверьте оплату: преподаватель, месяц, предмет и часы');
     const result=await backend('/rest/v1/rpc/orbita_record_payment',{method:'POST',body:{p_actor:p.id,p_iat:claims.iat,p_id:b.id,p_teacher:b.teacherId,p_month:b.month,p_subject:b.subject.trim(),p_type:b.lessonType,p_minutes:b.minutes,p_note:b.note.trim()}});return json({ok:true,payment:result});
    }
    if(route==='trash/purge'&&request.method==='POST'){
@@ -107,7 +108,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
     if(step==='preview')return json({digest:plan.digest,summary:plan.summary,details:plan.details,warnings:plan.warnings,profile:plan.profile,conflicts:plan.conflicts||[]});
     if(b.digest!==plan.digest)fail('Данные изменились. Повторите предпросмотр.',409);
     if(plan.conflicts?.length&&b.confirmConflicts!==true)fail('Подтвердите создание занятий с пересечениями',409);
-    if(!plan.changes.groups.length&&!plan.changes.lessons.length)return json({ok:true,summary:plan.summary});
+    if(!plan.changes.groups.length&&!plan.changes.lessons.length&&!plan.changes.payments?.length)return json({ok:true,summary:plan.summary});
     const summary=await backend('/rest/v1/rpc/orbita_apply_transfer',{method:'POST',body:{p_actor:p.id,p_iat:claims.iat,p_kind:kind,p_request:b.requestId,p_digest:plan.digest,p_changes:plan.changes,p_checks:plan.checks,p_summary:plan.summary}});return json({ok:true,summary});
    }
    if(route==='transfer/history'&&request.method==='GET'){
@@ -119,7 +120,7 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
    if(savedCopy&&request.method==='GET'){
     if(p.role!=='owner')fail('Доступ только главному admin',403);if(!uuid(savedCopy[1]))fail('Некорректный ID');
     const saved=await one('imports',savedCopy[1]);if(!saved||!['orbita-csv','orbita-restore','orbita-students','orbita-calendar','orbita-purge'].includes(saved.source))fail('Копия не найдена',404);
-    await audit(p,'backup:journal',saved.id);return json(saved.snapshot);
+    await audit(p,'backup:journal',saved.id);return json(await sealBackup(saved.snapshot));
    }
    const transfer=route.match(/^transfer\/(csv|restore)\/(preview|commit)$/);
    if(transfer&&request.method==='POST'){
@@ -130,20 +131,20 @@ export function createHandler({url,serviceKey,allowedOrigins,defaultTemporaryPas
      const applied=await one('imports',b.requestId);
      if(applied){if(applied.summary?.actor!==p.id||applied.summary?.digest!==b.digest)fail('ID операции уже использован',409);return json({ok:true,summary:applied.summary});}
     }
-    const [gs,ls,profiles]=await Promise.all([all('groups','id'),all('lessons','id'),all('profiles','id')]);
-    const existing={groups:gs.map(r=>({...r.payload,version:r.version})),lessons:ls.map(r=>({...r.payload,version:r.version}))};
+    const [gs,ls,profiles,payments]=await Promise.all([all('groups','id'),all('lessons','id'),all('profiles','id'),kind==='restore'?all('payments','id'):Promise.resolve([])]);
+    const existing={groups:gs.map(r=>({...r.payload,version:r.version})),lessons:ls.map(r=>({...r.payload,version:r.version})),payments};
     let plan;try{plan=await buildTransfer({kind,source:b.source,overwrite:b.overwrite===true,existing,users:profiles});}catch(e){fail(e.message);}
     if(kind==='csv')for(const {payload:g} of plan.changes.groups){const teacher=profiles.find(u=>u.id===g.teacherId);if(!teacher||teacher.disabled||!isManager(teacher.role)&&subjects.includes(g.subject)&&!teacher.subjects?.includes(g.subject)&&g.createdBy!==teacher.id)fail('Сначала разрешите преподавателю предмет группы в его профиле');}
     if(step==='preview')return json({digest:plan.digest,summary:plan.summary,details:plan.details,warnings:plan.warnings});
     if(plan.digest!==b.digest)fail('Данные изменились после предпросмотра. Проверьте файл заново.',409);
-    if(!plan.changes.groups.length&&!plan.changes.lessons.length)return json({ok:true,summary:plan.summary});
+    if(!plan.changes.groups.length&&!plan.changes.lessons.length&&!plan.changes.payments?.length)return json({ok:true,summary:plan.summary});
     const summary=await backend('/rest/v1/rpc/orbita_apply_transfer',{method:'POST',body:{p_actor:p.id,p_iat:claims.iat,p_kind:kind,p_request:b.requestId,p_digest:plan.digest,p_changes:plan.changes,p_checks:plan.checks,p_summary:plan.summary}});
     return json({ok:true,summary});
    }
    if(route==='backup'&&request.method==='GET'){
     if(p.role!=='owner')fail('Резервная копия доступна только главному admin',403);
     const snapshot=await backend('/rest/v1/rpc/orbita_journal_backup',{method:'POST',body:{}});
-    await audit(p,'backup:journal','journal');return json(snapshot);
+    await audit(p,'backup:journal','journal');return json(await sealBackup(snapshot));
    }
    if(route==='presence'&&request.method==='POST'){
     await backend(query('profiles',`id=eq.${p.id}`),{method:'PATCH',body:{last_seen_at:new Date(now()).toISOString()}});return json({ok:true});
