@@ -392,8 +392,10 @@ async function buildTransfer({ kind, source, existing, users, overwrite = false 
         if (oldSlot && (oldSlot.repeat && oldSlot.repeat !== "weekly" || oldSlot.effectiveFrom || oldSlot.effectiveTo || oldSlot.active === false)) throw Error(`\u0412\u0440\u0435\u043C\u044F ${slot.start} \u0432 \u0433\u0440\u0443\u043F\u043F\u0435 \xAB${group.name}\xBB \u0438\u043C\u0435\u0435\u0442 \u043E\u0441\u043E\u0431\u044B\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u0430 \u043F\u043E\u0432\u0442\u043E\u0440\u0435\u043D\u0438\u044F. \u0418\u0437\u043C\u0435\u043D\u0438\u0442\u0435 \u0435\u0433\u043E \u0432 \u043A\u0430\u0440\u0442\u043E\u0447\u043A\u0435.`);
         if (!oldSlot) group.schedule.push(slot);
       }
+      if (group.students.length > Math.max(10, old?.students.length || 0)) throw Error("CSV: \u043D\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 10 \u0443\u0447\u0435\u043D\u0438\u043A\u043E\u0432 \u0432 \u043D\u043E\u0432\u043E\u0439 \u0433\u0440\u0443\u043F\u043F\u0435");
       validateGroup(group);
-      put("groups", group);
+      const historical = groupHistory(old, { ...group, frozenLessons: old ? freezeLessons(old, existing.lessons, centreDate()) : {} }, centreDate());
+      put("groups", historical);
       for (const l of incoming.lessons) {
         const attendance = Object.fromEntries(Object.entries(l.attendance).map(([code, mark]) => [codeIds.get(code), mark]));
         const same = lessons.find((x) => x.groupId === group.id && x.date === l.date && x.start === l.start);
