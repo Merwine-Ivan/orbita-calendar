@@ -425,6 +425,15 @@ test('revoked subjects and deleted lesson overrides do not grant contact access'
  assert.equal((await(await req('bootstrap',other)).json()).groups[0].students[0].phone,undefined);
 });
 
+test('frozen lesson rosters cannot expose imported private contacts to unrelated teachers',async()=>{
+ const {req,tables}=fixture();const pupil={id:'60000000-0000-4000-8000-000000000001',name:'Ученик',phone:'+79990000000',guardianPhone:'+79990000001',guardianName:'Родитель',age:10,gender:'male'};
+ tables.groups[0].payload.students=[pupil];tables.groups[0].payload.frozenLessons={[lid]:{name:'Группа',subject:'Английский',teacherId:teacher,students:[pupil]}};
+ const response=await(await req('bootstrap',other)).json(),student=response.groups[0].frozenLessons[lid].students[0];
+ assert.deepEqual(student,{id:pupil.id,name:pupil.name});
+ assert.equal(tables.groups[0].payload.frozenLessons[lid].students[0].phone,pupil.phone,'response filtering never edits stored history');
+ assert.equal((await(await req('bootstrap',admin)).json()).groups[0].students[0].phone,pupil.phone);
+});
+
 test('unified student operations are manager-only and linking cannot bypass group membership checks',async()=>{
  const {req,tables,calls}=fixture();tables.imports=[];const student={id:'60000000-0000-4000-8000-000000000001',name:'Первый',phone:'+79990000000'};tables.groups[0].payload.students=[student];
  const input={action:'update',personId:student.id,profile:{name:'Общее ФИО',phone:'+79990000001'}};
